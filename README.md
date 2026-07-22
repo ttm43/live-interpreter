@@ -1,118 +1,140 @@
-# Live Interpreter（系统音频中英同传）
+# Live Interpreter — real-time speech translation for system audio
 
-采集电脑正在播放的声音（WASAPI loopback），实时做中英互译：
-识别出的原文和译文打印成字幕，并用 TTS 朗读译文。
+**English** | [中文](README.zh-CN.md)
 
-全部本地运行，无需联网、无需 WSL、无需 PyTorch。
+Captures whatever your computer is playing (WASAPI loopback) and interprets it
+in real time — English speech in, live subtitles + Chinese translation out,
+optionally spoken aloud via TTS.
 
-## 架构
+Fully local. No cloud APIs, no WSL, no PyTorch, zero compilation on Windows.
+
+## Architecture
 
 ```
-系统音频 (扬声器 loopback, PyAudioWPatch, 自动增益)
-   → 流式 ASR (sherpa-onnx, 带断句; 按模式选模型, 见下)
-   → 翻译 (Ollama qwen3:8b, 本地 GPU, 带上下文记忆 + ASR 纠错)
-   → 双语 TTS (sherpa-onnx kokoro-multi-lang-v1_1) → 扬声器播放
+System audio (speaker loopback, PyAudioWPatch, auto-gain)
+   → Streaming ASR (sherpa-onnx, endpoint detection; dual-engine, see below)
+   → Translation (Ollama, local GPU/CPU, glossary-aware, fixes ASR errors)
+   → Bilingual TTS (sherpa-onnx kokoro-multi-lang-v1_1) → speakers
 ```
 
-- **当前专注英→中**（自动/中→英 已暂时下线，代码保留在 config/gui 注释里）
-- **识别模型可切换**（GUI「识别」下拉框），真实 YouTube 音频基准
-  （`bench_asr.py`，伪参考 = Parakeet-TDT-0.6B-v3 离线转写）：
+- **Currently focused on EN → ZH** (auto / ZH → EN modes are parked; the code
+  remains in comments in `config.py` / `gui.py`).
+- **Switchable ASR models** (GUI "识别" dropdown). Benchmarked on real YouTube
+  clips (`bench_asr.py`, pseudo-reference = offline Parakeet-TDT-0.6B-v3):
 
-  | 模型 | 真实片段平均 WER | 字幕更新间隔 | 定位 |
+  | Model | Avg WER on real clips | Caption update interval | Role |
   |---|---|---|---|
-  | nemotron3.5-1120ms | **≈23%（新闻/发布会/播客三项最佳）** | ~1.3s | **默认**；自带标点+大小写 |
-  | nemo-1040ms | ≈28%；**重口音场景仍最强** | ~1.2s | 口音重的说话人用这个 |
-  | nemotron3.5-320ms | ≈31% | ~500ms | 低延迟折中 |
-  | nemo-80ms | ≈37% | **~330ms** | 逐字感优先 |
-  | nemo-480ms | ≈39% | ~700ms | 折中（配乐场景异常差） |
-  | zipformer-2023 | ≈41%（真实音频最差） | ~360ms | 仅 LibriSpeech 朗读音频强 |
+  | nemotron3.5-1120ms | **≈23% (best on news / keynote / podcast)** | ~1.3s | **Default**; native punctuation + casing |
+  | nemo-1040ms | ≈28%; **still best on heavy accents** | ~1.2s | Use for accented speakers |
+  | nemotron3.5-320ms | ≈31% | ~500ms | Low-latency compromise |
+  | nemo-80ms | ≈37% | **~330ms** | Word-by-word feel |
+  | nemo-480ms | ≈39% | ~700ms | Middle ground (poor with music) |
+  | zipformer-2023 | ≈41% (worst on real audio) | ~360ms | Only strong on LibriSpeech-style read speech |
 
-  注：nemotron3.5 是多语模型，重口音会触发语种混淆（吐外文碎片）；其
-  80ms/160ms 档在 CPU 上 RTF 0.4~0.9 且精度全场最差（小分块双输），已剔除；
-  560ms 档 ≈28% 带标点，是单引擎低延迟场景的可选折中。
+  Notes: nemotron3.5 is multilingual — heavy accents can trigger language
+  confusion (foreign-script fragments). Its 80ms/160ms tiers were dropped:
+  RTF 0.4–0.9 on CPU *and* the worst accuracy (small chunks lose both ways).
+  The 560ms tier (≈28%, punctuated) is a decent single-engine compromise.
 
-- **双引擎（默认开启）**：「预览」引擎（默认 nemo-80ms，~240ms 逐字更新）
-  只负责灰色预览行的手感；「识别」引擎（默认 nemotron3.5-1120ms）负责定稿
-  和喂翻译。单模型做不到又快又准，双引擎各取所长，合计 RTF ≈0.25。
-  GUI「预览」下拉框可换预览引擎或选「关闭」回到单引擎。
+- **Dual-engine ASR (on by default)**: a fast *preview* engine (nemo-80ms,
+  ~240ms word-by-word updates) drives only the gray live-caption line, while
+  the *final* engine (nemotron3.5-1120ms) produces the accurate, punctuated
+  segments that feed translation. No single streaming model is both fast and
+  accurate — the pair gets you both at a combined RTF of ≈0.25. The GUI
+  "预览" dropdown switches or disables the preview engine.
 
-- **翻译模型可切换**（GUI「翻译」下拉框，列出本地 Ollama 全部模型；
-  `bench_translate.py` 对比，含 ASR 脏输入测试）。已装候选：
+- **Switchable translation models** (GUI "翻译" dropdown lists everything
+  installed in Ollama; compare with `bench_translate.py`, which includes
+  noisy ASR-style inputs). Verdicts from our bench:
 
-  | 模型 | 大小 | 定位 |
+  | Model | Size | Role |
   |---|---|---|
-  | qwen3:4b-instruct | 2.5G | **默认**：质量/速度/体积最佳平衡，能纠 ASR 错词（clod→Claude） |
-  | qwen3:14b | 9.3G | 质量最高（数字、人名、术语全对），本机显存充裕时用 |
-  | kaelri/hy-mt2:1.8b-q8_0 | 2.0G | 翻译特化（腾讯 Hy-MT2），低内存机器首选，数字/人名准 |
-  | qwen3:8b | 5.2G | 数字不稳定（four billion 翻错过两次），不再推荐 |
-  | demonbyron/HY-MT1.5-7B | 4.6G | 上一代翻译特化，被 4b-instruct/Hy-MT2 替代 |
+  | qwen3:4b-instruct | 2.5G | **Default**: best quality/speed/size balance; fixes ASR errors (clod→Claude) |
+  | qwen3:14b | 9.3G | Highest quality (numbers, names, terms all correct) if you have the VRAM |
+  | kaelri/hy-mt2:1.8b-q8_0 | 2.0G | Translation-specialized (Tencent Hy-MT2); best pick for low-RAM machines |
+  | qwen3:8b | 5.2G | Unreliable numbers ("four billion" mistranslated twice) — not recommended |
+  | demonbyron/HY-MT1.5-7B | 4.6G | Previous-gen MT model, superseded by 4b-instruct / Hy-MT2 |
 
-  Hunyuan/HY-MT 系模型自动使用其官方翻译提示词与术语干预格式
-  （translator.py 按模型名识别）。注意：HY-MT1.5-**1.8B** 的 GGUF 在
-  Ollama 下输出损坏（回显模板/幻觉），已验证不可用——要小模型请用 Hy-MT2。
+  Hunyuan/HY-MT models automatically get their official translation prompt and
+  terminology-intervention format (detected by model name in `translator.py`).
+  Warning: the HY-MT1.5-**1.8B** GGUFs produce corrupted output under Ollama
+  (template echo / hallucination) — use Hy-MT2 for a small MT model.
 
-- **词表**（GUI「词表」按钮 / 根目录 `glossary.txt`）：`原文 = 译文` 一行一条，
-  保存后下一段立即生效。发现翻错术语 → 加一行即可。通用 LLM 走 prompt 注入，
-  HY-MT 系走官方术语干预格式；只注入当前句子命中的词条，不拖慢翻译。
-- 防回声：TTS 朗读期间自动暂停采集（否则会把自己的译音再翻一遍）。
-  如果 TTS 输出到另一台设备（如耳机），可用 `--no-mute-during-tts` 关掉门控。
+- **Glossary** (GUI "词表" button / `glossary.txt`): one `source = target`
+  entry per line; saving takes effect on the next segment, no restart. Spot a
+  mistranslated term → add a line. General LLMs get it via prompt injection,
+  HY-MT models via their official terminology format. Only entries matched in
+  the current segment are injected, so translation stays fast. Tip: add common
+  ASR mishearings (`clod = Claude`) to force corrections even with MT models.
 
-## 全新安装（克隆后）
+- **Anti-feedback**: capture is gated while TTS speaks (otherwise the app
+  would re-translate its own voice). If TTS plays on a different device
+  (e.g. headphones), disable the gate with `--no-mute-during-tts`.
 
-要求：Windows 10/11，Python 3.10+（3.13 已验证）。项目零编译，不依赖 PyTorch/WSL。
+## Fresh install (after cloning)
+
+Requirements: Windows 10/11, Python 3.10+ (3.13 verified). Zero compilation,
+no PyTorch/WSL required.
 
 ```bat
 powershell -ExecutionPolicy Bypass -File setup.ps1
 ```
 
-脚本会创建 `.venv` 装依赖、下载默认 ASR/TTS 模型（约 1.5GB）、下载 Ollama
-便携版（约 1.4GB）并拉取默认翻译模型 qwen3:4b-instruct（约 2.5GB）。
-README 里表格中的其他候选模型按需另行下载。
+The script creates `.venv` and installs dependencies, downloads the default
+ASR/TTS models (~1.5GB) and the portable Ollama runtime (~1.4GB), then pulls
+the default translation model qwen3:4b-instruct (~2.5GB). Other candidate
+models from the tables above can be downloaded on demand.
 
-## 使用
+## Usage
 
-图形界面，以下两种方式等价（都会自动挂载 .venv 依赖并拉起 Ollama）：
-
-```bat
-run_gui.bat          :: 双击即可，无黑窗口
-python gui.py        :: 在项目目录下直接跑也行
-```
-
-深色窗口界面：「开始/停止」按钮、朗读译文开关、采集设备下拉框；
-灰色斜体行实时显示识别中的半句，识别定稿后显示原文 + 蓝色译文（带延迟标注）。
-
-命令行版：
+GUI — the two commands are equivalent (both auto-attach the `.venv`
+dependencies and auto-start Ollama):
 
 ```bat
-run.bat                 :: 完整模式（字幕 + 语音）
-run.bat --no-tts        :: 纯字幕模式（延迟最低，也不会打断原声）
-run.bat --list-devices  :: 列出可选的采集/播放设备
-run.bat --capture-device 5 --tts-device 8   :: 手动指定设备
-run.bat --model qwen2.5:7b-instruct         :: 换翻译模型
+run_gui.bat          :: double-click, no console window
+python gui.py        :: bare system python works too
 ```
 
-第一次说话后翻译稍慢（Ollama 冷启动加载模型到显存），之后每段约 1~2 秒出译文。
+Dark-themed window: start/stop button, spoken-translation toggle, capture
+device picker. The gray italic line is the live partial; finalized source
+text and the blue translation (with latency tag) appear above it.
 
-## 目录
+CLI:
 
-```
-gui.py            图形界面（tkinter，无额外依赖）
-app.py            命令行入口
-interpreter/      各模块：管线编排 / 采集 / ASR / 翻译 / TTS / 显示
-models/           ASR + TTS + Ollama 模型（全部项目内，可整体搬移）
-libs/ollama/      Ollama 便携版（不写注册表，不装系统服务）
-selftest.py       离线自检（ASR 识别测试音频 + TTS 合成试听 wav）
-bench_asr.py      流式 ASR 模型对比（testclips/ 真实音频 + LibriSpeech）
-bench_translate.py 翻译模型对比（安装的 qwen/hunyuan 系自动参战）
-make_refs.py      用 Parakeet 离线模型为 testclips/ 生成伪参考文本
-testclips/        真实 YouTube 测试音频（yt-dlp 抓取，16k 单声道）
+```bat
+run.bat                 :: full mode (subtitles + speech)
+run.bat --no-tts        :: subtitles only (lowest latency, never interrupts)
+run.bat --list-devices  :: list capture/playback devices
+run.bat --capture-device 5 --tts-device 8   :: pick devices manually
+run.bat --model qwen3:14b                   :: switch translation model
 ```
 
-## 调参位置
+The first segment is slower (Ollama cold-loads the model into VRAM);
+afterwards expect a translation ~1–2s after each sentence ends.
 
-`interpreter/config.py`：
+## Layout
 
-- 断句灵敏度：`rule2_min_trailing_silence`（默认 0.9 秒，调小出字快但句子碎）
-- TTS 音色：`en_speaker_id` / `zh_speaker_id`（kokoro v1.1 共 103 个音色）
-- TTS 语速：`speed`（默认 1.1，同传建议略快于原速）
-- 翻译上下文条数：`history_size`
+```
+gui.py             Tkinter GUI (no extra dependencies)
+app.py             CLI entry point
+interpreter/       modules: pipeline / capture / ASR / translation / TTS / display
+models/            ASR + TTS + Ollama models (all project-local, fully portable)
+libs/ollama/       portable Ollama (no registry writes, no system service)
+selftest.py        offline self-test (ASR on bundled wavs + TTS synthesis)
+bench_asr.py       streaming-ASR shootout (real clips in testclips/ + LibriSpeech)
+bench_translate.py translation shootout (installed qwen/hunyuan models auto-enter)
+bench_nmt.py       legacy NMT baseline (opus-mt / NLLB — spoiler: unusable)
+make_refs.py       pseudo-references for testclips/ via offline Parakeet
+testclips/         real YouTube test audio (fetched with yt-dlp, 16k mono)
+```
+
+## Tuning
+
+`interpreter/config.py`:
+
+- Endpointing sensitivity: `rule2_min_trailing_silence` (default 0.9s; lower
+  = faster segments but choppier sentences)
+- TTS voices: `en_speaker_id` / `zh_speaker_id` (kokoro v1.1 has 103 voices)
+- TTS speed: `speed` (default 1.1 — slightly faster than source is standard
+  practice for interpretation)
+- Translation context depth: `history_size`
