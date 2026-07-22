@@ -1,0 +1,18 @@
+# 术语表：翻译时强制使用的对照。格式：原文 = 译文（保留原文就写成 X = X）
+# 改完保存即可，下一段翻译立即生效，不用重启。
+Claude = Claude
+ChatGPT = ChatGPT
+Gemini = Gemini
+Copilot = Copilot
+OpenAI = OpenAI
+Anthropic = Anthropic
+DeepSeek = DeepSeek
+token = token
+tokens = token
+prompt = 提示词
+transformer = Transformer
+attention head = 注意力头
+KV cache = KV 缓存
+fine-tuning = 微调
+RAG = RAG
+AGI = AGI

@@ -1,0 +1,11 @@
+# 大文件与本机产物 — 全部由 setup.ps1 重新获取
+models/
+libs/
+.venv/
+testclips/
+__pycache__/
+*.pyc
+
+# 本地测试产物
+selftest_tts_*.wav
+e2e_*.log
