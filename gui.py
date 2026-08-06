@@ -149,7 +149,10 @@ class InterpreterGui:
         self.text.tag_configure("dst", foreground=ACCENT)
         self.text.tag_configure("meta", foreground=FG_DIM, font=FONT_SMALL)
         self.text.tag_configure("live", foreground=FG_DIM, font=(FONT[0], 11, "italic"))
+        self.text.tag_configure("live_dst", foreground="#5b87b0", font=(FONT[0], 11, "italic"))
         self._partial_active = False
+        self._live_src = ""   # speculative view: growing source partial
+        self._live_dst = ""   # speculative view: provisional translation
 
         bottom = ttk.Frame(self.root, padding=(12, 6))
         bottom.pack(fill="x")
@@ -197,6 +200,7 @@ class InterpreterGui:
             on_partial=lambda t: self.events.put(("partial", (t,))),
             on_final=lambda t, lang: self.events.put(("final", (t, lang))),
             on_translation=lambda t, lang, s: self.events.put(("translation", (t, lang, s))),
+            on_provisional=lambda t, lang: self.events.put(("provisional", (t, lang))),
             on_status=lambda m: self.events.put(("status", (m,))),
         )
         error = pipeline.check_backend()
@@ -256,13 +260,26 @@ class InterpreterGui:
         self.status_var.set("已停止")
 
     def _ev_partial(self, text: str) -> None:
-        """Live transcript line that grows word-by-word inside the main area."""
+        self._live_src = text
+        self._render_live()
+
+    def _ev_provisional(self, text: str, lang: str) -> None:
+        self._live_dst = text
+        self._render_live()
+
+    def _render_live(self) -> None:
+        """Redraw the speculative two-line block (source + provisional)."""
         self.text.configure(state="normal")
         self._remove_partial()
-        self.text.mark_set("partial_start", "end-1c")
-        self.text.mark_gravity("partial_start", "left")
-        self.text.insert("end", f"… {text}", "live")
-        self._partial_active = True
+        if self._live_src or self._live_dst:
+            self.text.mark_set("partial_start", "end-1c")
+            self.text.mark_gravity("partial_start", "left")
+            if self._live_src:
+                self.text.insert("end", f"… {self._live_src}", "live")
+            if self._live_dst:
+                prefix = "\n" if self._live_src else ""
+                self.text.insert("end", f"{prefix}⇢ {self._live_dst}", "live_dst")
+            self._partial_active = True
         self.text.see("end")
         self.text.configure(state="disabled")
 
@@ -272,11 +289,13 @@ class InterpreterGui:
             self._partial_active = False
 
     def _ev_final(self, text: str, lang: str) -> None:
-        # The live partial is this same utterance's stale preview — drop it.
-        self._append(f"[{lang}] {text}\n", "src", preserve_partial=False)
+        # The live block is this utterance's stale preview — drop it; the
+        # authoritative translation follows within a beat.
+        self._live_src = ""
+        self._live_dst = ""
+        self._append(f"[{lang}] {text}\n", "src")
 
     def _ev_translation(self, text: str, lang: str, latency_s: float) -> None:
-        # The live partial (if any) already belongs to the next utterance.
         self._append(f"      → {text} ", "dst")
         self._append(f"({latency_s:.1f}s)\n\n", "meta")
 
@@ -299,25 +318,22 @@ class InterpreterGui:
         self.text.configure(state="normal")
         self.text.delete("1.0", "end")
         self._partial_active = False
+        self._live_src = ""
+        self._live_dst = ""
         self.text.configure(state="disabled")
         self.partial_var.set("")
 
-    def _append(self, text: str, tag: str, preserve_partial: bool = True) -> None:
-        """Append finalized content, keeping any live partial line below it."""
+    MAX_LINES = 600  # keep long sessions from growing the widget unboundedly
+
+    def _append(self, text: str, tag: str) -> None:
+        """Append finalized content, then re-draw the live block below it."""
         self.text.configure(state="normal")
-        partial = None
-        if self._partial_active:
-            if preserve_partial:
-                partial = self.text.get("partial_start", "end")
-            self._remove_partial()
+        if int(self.text.index("end-1c").split(".")[0]) > self.MAX_LINES:
+            self.text.delete("1.0", f"{self.MAX_LINES // 3}.0")
+        self._remove_partial()
         self.text.insert("end", text, tag)
-        if partial and partial.strip():
-            self.text.mark_set("partial_start", "end-1c")
-            self.text.mark_gravity("partial_start", "left")
-            self.text.insert("end", partial.rstrip("\n"), "live")
-            self._partial_active = True
-        self.text.see("end")
         self.text.configure(state="disabled")
+        self._render_live()
 
 
 def main() -> None:

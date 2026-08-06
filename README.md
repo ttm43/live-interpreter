@@ -60,6 +60,14 @@ System audio (speaker loopback, PyAudioWPatch, auto-gain)
   Warning: the HY-MT1.5-**1.8B** GGUFs produce corrupted output under Ollama
   (template echo / hallucination) — use Hy-MT2 for a small MT model.
 
+- **Speculative translation** (inspired by GPT-Live's speculative/authoritative
+  dual view): while a sentence is still being spoken, the growing partial is
+  provisionally translated and shown as a dim blue line that revises in place;
+  the authoritative translation replaces it once the segment finalizes. Set
+  `TranslatorConfig.spec_model` to a smaller model (e.g.
+  `kaelri/hy-mt2:1.8b-q8_0`) for a two-tier draft+final setup. The model is
+  pre-warmed at session start, so the first segment translates fast.
+
 - **Glossary** (GUI "词表" button / `glossary.txt`): one `source = target`
   entry per line; saving takes effect on the next segment, no restart. Spot a
   mistranslated term → add a line. General LLMs get it via prompt injection,

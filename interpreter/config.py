@@ -85,6 +85,10 @@ class TranslatorConfig:
     # Optional per-direction overrides; empty string = use `model`.
     model_zh2en: str = ""
     model_en2zh: str = ""
+    # Speculative (provisional) translation of unfinished partials. Empty
+    # string = use `model`. Point this at a smaller model (e.g.
+    # "kaelri/hy-mt2:1.8b-q8_0") for a two-tier draft+final setup.
+    spec_model: str = ""
     temperature: float = 0.2
     timeout_s: float = 30.0
     keep_alive: str = "30m"

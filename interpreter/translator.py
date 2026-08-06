@@ -47,13 +47,59 @@ class OllamaTranslator:
         except requests.RequestException:
             return False
 
+    def translate_partial(self, text: str, target_lang: str) -> str:
+        """Provisional translation of an unfinished utterance fragment.
+
+        Does not touch the rolling history; the finalized segment will be
+        translated (and recorded) separately by translate().
+        """
+        target = "English" if target_lang == "en" else "Chinese"
+        model = self._cfg.spec_model or self._cfg.model
+        if _is_dedicated_mt(model):
+            target_cn = "中文" if target_lang == "zh" else "英文"
+            prompt = (
+                f"将以下文本翻译为{target_cn}，注意只需要输出翻译后的结果，"
+                f"不要额外解释：\n{text}"
+            )
+            messages = [{"role": "user", "content": prompt}]
+        else:
+            prompt = (
+                f"Target language: {target}\n"
+                "Note: this is an UNFINISHED live utterance — translate only "
+                "what is there, never invent an ending.\n"
+                f"{text}"
+            )
+            messages = [{"role": "system", "content": _SYSTEM_PROMPT}]
+            for src, dst in self._history:
+                messages.append({"role": "user", "content": src})
+                messages.append({"role": "assistant", "content": dst})
+            messages.append({"role": "user", "content": prompt})
+
+        r = self._session.post(
+            f"{self._cfg.base_url}/api/chat",
+            json={
+                "model": model,
+                "messages": messages,
+                "stream": False,
+                "think": False,
+                "keep_alive": self._cfg.keep_alive,
+                "options": {"temperature": self._cfg.temperature},
+            },
+            timeout=self._cfg.timeout_s,
+        )
+        r.raise_for_status()
+        return _strip_think(r.json()["message"]["content"].strip())
+
     def warm_up(self) -> None:
         """Load the model(s) into memory so the first segment isn't slow.
 
         An /api/generate call with no prompt just loads the model and honours
         keep_alive — the documented Ollama warm-up idiom.
         """
-        models = {self._cfg.model, self._cfg.model_zh2en, self._cfg.model_en2zh}
+        models = {
+            self._cfg.model, self._cfg.model_zh2en,
+            self._cfg.model_en2zh, self._cfg.spec_model,
+        }
         for model in filter(None, models):
             try:
                 self._session.post(

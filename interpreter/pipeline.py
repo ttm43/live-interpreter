@@ -29,13 +29,16 @@ class InterpreterPipeline:
         on_partial: Callable[[str], None] = Noop,
         on_final: Callable[[str, str], None] = Noop,          # (text, lang)
         on_translation: Callable[[str, str, float], None] = Noop,  # (text, lang, latency_s)
+        on_provisional: Callable[[str, str], None] = Noop,    # (text, lang)
         on_status: Callable[[str], None] = Noop,
     ):
         self._cfg = cfg
         self._on_partial = on_partial
         self._on_final = on_final
         self._on_translation = on_translation
+        self._on_provisional = on_provisional
         self._on_status = on_status
+        self._spec_text = ""  # newest partial from the accurate engine
         self._stop = threading.Event()
         self._threads: list[threading.Thread] = []
         self._capture: LoopbackCapture | None = None
@@ -103,6 +106,7 @@ class InterpreterPipeline:
         self._threads = [
             threading.Thread(target=self._asr_loop, daemon=True),
             threading.Thread(target=self._translation_worker, daemon=True),
+            threading.Thread(target=self._speculative_worker, daemon=True),
         ]
         if self._speech is not None:
             self._threads.append(threading.Thread(target=self._tts_worker, daemon=True))
@@ -153,6 +157,7 @@ class InterpreterPipeline:
                         self._on_partial(event.text)
             for event in self._asr.accept(chunk, capture.sample_rate):
                 if event.is_final:
+                    self._spec_text = ""  # utterance closed; stop speculating
                     if len(event.text) < self._cfg.min_chars_to_translate:
                         continue
                     mode = self._cfg.lang_mode
@@ -164,8 +169,39 @@ class InterpreterPipeline:
                         self._segments.get_nowait()  # drop oldest, keep newest
                         self._segments.put_nowait((event.text, time.monotonic()))
                         self._on_status("翻译积压，丢弃最旧片段")
-                elif fast is None:
-                    self._on_partial(event.text)
+                else:
+                    self._spec_text = event.text
+                    if fast is None:
+                        self._on_partial(event.text)
+
+    def _speculative_worker(self) -> None:
+        """Provisional translation of the growing partial (speculative view).
+
+        Only ever translates the newest snapshot; superseded partials are
+        skipped, so this self-throttles to the LLM's own speed.
+        """
+        last = ""
+        while not self._stop.is_set():
+            text = self._spec_text
+            if text == last or len(text) < 8:
+                time.sleep(0.1)
+                continue
+            mode = self._cfg.lang_mode
+            if mode == "zh":
+                dst_lang = "en"
+            elif mode == "en":
+                dst_lang = "zh"
+            else:
+                dst_lang = "en" if detect_lang(text) == "zh" else "zh"
+            try:
+                provisional = self._translator.translate_partial(text, dst_lang)
+            except Exception:  # noqa: BLE001 - provisional output is best-effort
+                time.sleep(0.5)
+                continue
+            last = text
+            # Only show it if this partial is still the current one.
+            if self._spec_text == text and provisional:
+                self._on_provisional(provisional, dst_lang)
 
     def _translation_worker(self) -> None:
         while not self._stop.is_set():
