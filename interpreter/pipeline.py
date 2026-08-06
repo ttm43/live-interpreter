@@ -62,6 +62,8 @@ class InterpreterPipeline:
         self._stop.clear()
 
         self._translator = OllamaTranslator(cfg.translator)
+        # Pull the LLM into memory now so the first segment translates fast.
+        threading.Thread(target=self._translator.warm_up, daemon=True).start()
         self._on_status("正在加载 ASR 模型 ...")
         # English source uses a dedicated en model: far better accuracy and
         # endpointing than the Chinese-dominant bilingual model.

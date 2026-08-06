@@ -47,6 +47,23 @@ class OllamaTranslator:
         except requests.RequestException:
             return False
 
+    def warm_up(self) -> None:
+        """Load the model(s) into memory so the first segment isn't slow.
+
+        An /api/generate call with no prompt just loads the model and honours
+        keep_alive — the documented Ollama warm-up idiom.
+        """
+        models = {self._cfg.model, self._cfg.model_zh2en, self._cfg.model_en2zh}
+        for model in filter(None, models):
+            try:
+                self._session.post(
+                    f"{self._cfg.base_url}/api/generate",
+                    json={"model": model, "keep_alive": self._cfg.keep_alive},
+                    timeout=120,
+                )
+            except requests.RequestException:
+                pass  # cold start will just be slower; not fatal
+
     def has_model(self) -> bool:
         try:
             r = self._session.get(f"{self._cfg.base_url}/api/tags", timeout=3)
