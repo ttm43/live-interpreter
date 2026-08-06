@@ -134,6 +134,10 @@ class AppConfig:
     tts: TtsConfig = field(default_factory=TtsConfig)
     enable_tts: bool = True
     mute_capture_during_tts: bool = True
+    # Subtract our own TTS from the capture (digital AEC) instead of gating
+    # it. Falls back to a mute equivalent when alignment fails. Only applies
+    # when TTS plays on the captured (default) device.
+    echo_cancel: bool = True
     min_chars_to_translate: int = 2
     capture_device_index: int | None = None  # None = default speakers loopback
     tts_output_device_index: int | None = None  # None = default output

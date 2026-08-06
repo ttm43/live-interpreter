@@ -36,6 +36,10 @@ def parse_args() -> argparse.Namespace:
         "--no-mute-during-tts", action="store_true",
         help="keep capturing while TTS speaks (use when TTS plays on another device)",
     )
+    p.add_argument(
+        "--no-echo-cancel", action="store_true",
+        help="disable AEC and gate (mute) capture while TTS speaks instead",
+    )
     return p.parse_args()
 
 
@@ -44,6 +48,7 @@ def build_config(args: argparse.Namespace) -> AppConfig:
         lang_mode=args.lang,
         enable_tts=not args.no_tts,
         mute_capture_during_tts=not args.no_mute_during_tts,
+        echo_cancel=not args.no_echo_cancel,
         capture_device_index=args.capture_device,
         tts_output_device_index=args.tts_device,
     )

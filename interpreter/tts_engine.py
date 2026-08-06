@@ -47,6 +47,9 @@ class BilingualTts:
     def speak(self, text: str, lang: str) -> bool:
         """Synthesize and play; returns True only if audio was actually played."""
         samples, sample_rate = self.synthesize(text, lang)
+        return self.play(samples, sample_rate)
+
+    def play(self, samples: np.ndarray, sample_rate: int) -> bool:
         if samples.size == 0:
             return False
         with self._lock:

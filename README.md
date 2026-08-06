@@ -75,9 +75,15 @@ System audio (speaker loopback, PyAudioWPatch, auto-gain)
   the current segment are injected, so translation stays fast. Tip: add common
   ASR mishearings (`clod = Claude`) to force corrections even with MT models.
 
-- **Anti-feedback**: capture is gated while TTS speaks (otherwise the app
-  would re-translate its own voice). If TTS plays on a different device
-  (e.g. headphones), disable the gate with `--no-mute-during-tts`.
+- **Anti-feedback via digital AEC (default)**: instead of muting capture
+  while TTS speaks (losing the programme audio underneath), the app
+  subtracts its own known TTS waveform from the loopback capture —
+  cross-correlation alignment + adaptive single-tap gain, ~-10dB residual,
+  plus a pure-echo gate and a language filter as backstops. Only ~1s is lost
+  per utterance (the alignment window) versus the whole utterance with
+  gating. Verified: programme speech is transcribed *while* the interpreter
+  talks over it. Disable with `--no-echo-cancel` (falls back to gating);
+  AEC auto-disables when TTS plays on a separate device (`--tts-device`).
 
 ## Fresh install (after cloning)
 

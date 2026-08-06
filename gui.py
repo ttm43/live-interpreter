@@ -274,6 +274,8 @@ class InterpreterGui:
         if self._live_src or self._live_dst:
             self.text.mark_set("partial_start", "end-1c")
             self.text.mark_gravity("partial_start", "left")
+            if self.text.index("end-1c").split(".")[1] != "0":
+                self.text.insert("end", "\n")  # always start on a fresh line
             if self._live_src:
                 self.text.insert("end", f"… {self._live_src}", "live")
             if self._live_dst:

@@ -13,6 +13,7 @@ import numpy as np
 from .asr import StreamingAsr
 from .audio_capture import AutoGain, KeepAliveOutput, LoopbackCapture
 from .config import ASR_ENGLISH, EN_ASR_MODELS, AppConfig
+from .echo_cancel import EchoCanceller
 from .translator import OllamaTranslator, detect_lang
 
 TTS_TAIL_GUARD_S = 0.4  # keep capture muted briefly after TTS stops
@@ -89,6 +90,9 @@ class InterpreterPipeline:
             self._on_status(f"双引擎: 预览 {fast_name} + 定稿 {cfg.en_asr_model}")
 
         self._capture = LoopbackCapture(cfg.capture_device_index)
+        # AEC only makes sense when our TTS plays on the captured endpoint.
+        use_aec = cfg.echo_cancel and cfg.tts_output_device_index is None
+        self._aec = EchoCanceller(self._capture.sample_rate) if use_aec else None
         self._on_status(f"采集设备: {self._capture.device_name}")
 
         # Keep the render path active so loopback never drops leading audio.
@@ -146,9 +150,15 @@ class InterpreterPipeline:
         # synthetic silence on timeout to keep endpoint detection moving.
         silence = np.zeros(int(capture.sample_rate * 0.2), dtype=np.float32)
         fast = self._fast_asr
+        aec = self._aec
         while not self._stop.is_set():
             chunk = capture.read()
-            chunk = silence if chunk is None else agc.apply(chunk)
+            if chunk is None:
+                chunk = silence
+            else:
+                if aec is not None and aec.active:
+                    chunk = aec.process(chunk)
+                chunk = agc.apply(chunk)
             if fast is not None:
                 # Preview engine drives the live partial line only; its finals
                 # are discarded (accept() still resets its stream internally).
@@ -161,6 +171,10 @@ class InterpreterPipeline:
                     if len(event.text) < self._cfg.min_chars_to_translate:
                         continue
                     mode = self._cfg.lang_mode
+                    if mode == "en" and detect_lang(event.text) == "zh":
+                        # A mostly-Chinese segment in en mode can only be our
+                        # own TTS echo leaking through — never programme audio.
+                        continue
                     src_lang = mode if mode in ("zh", "en") else detect_lang(event.text)
                     self._on_final(event.text, src_lang)
                     try:
@@ -248,12 +262,20 @@ class InterpreterPipeline:
                     text, lang = self._speech.get(timeout=0.2)
                 except queue.Empty:
                     continue
-                gated = self._cfg.mute_capture_during_tts and self._capture is not None
+                use_aec = self._aec is not None
+                gated = (
+                    not use_aec
+                    and self._cfg.mute_capture_during_tts
+                    and self._capture is not None
+                )
                 if gated:
                     self._capture.suppress.set()
                 played = False
                 try:
-                    played = tts.speak(text, lang)
+                    samples, sr = tts.synthesize(text, lang)
+                    if use_aec and samples.size:
+                        self._aec.set_reference(samples, sr)
+                    played = tts.play(samples, sr)
                 except Exception as e:  # noqa: BLE001
                     self._on_status(f"TTS 播放失败: {e}")
                 finally:
