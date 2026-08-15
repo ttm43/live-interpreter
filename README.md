@@ -87,6 +87,13 @@ System audio (speaker loopback, PyAudioWPatch, auto-gain)
   talks over it. Disable with `--no-echo-cancel` (falls back to gating);
   AEC auto-disables when TTS plays on a separate device (`--tts-device`).
 
+- **Audio-LLM one-step translation (experimented, parked)**: feeding audio
+  slices straight into an omni model (`bench_omni.py`, llama-server +
+  `input_audio`). Verdict as of llama.cpp b10437: the audio path is not
+  production-ready — Qwen2.5-Omni-7B GGUF hears only fragments of speech
+  (maintainer-confirmed), gemma-4-E4B crashes at audio init. Revisit when
+  llama.cpp audio matures or Ollama gains audio input.
+
 ## Fresh install (after cloning)
 
 Requirements: Windows 10/11, Python 3.10+ (3.13 verified). Zero compilation,

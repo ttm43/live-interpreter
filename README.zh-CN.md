@@ -73,6 +73,12 @@
   译音播放的同时节目原声仍被识别翻译。`--no-echo-cancel` 可退回旧门控；
   TTS 输出到独立设备（`--tts-device`）时 AEC 自动停用。
 
+- **音频 LLM 一步直翻（已实验，暂时搁置）**：音频切片直接喂 omni 模型
+  （`bench_omni.py`，llama-server + `input_audio`）。llama.cpp b10437 时点
+  的判决：音频路径尚不可用——Qwen2.5-Omni-7B GGUF 只能听到语音的碎片
+  （维护者确认的移植层问题），gemma-4-E4B 音频初始化即崩溃。等 llama.cpp
+  音频路径成熟或 Ollama 支持音频输入后重启这条线。
+
 ## 全新安装（克隆后）
 
 要求：Windows 10/11，Python 3.10+（3.13 已验证）。项目零编译，不依赖 PyTorch/WSL。
