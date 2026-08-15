@@ -83,6 +83,9 @@ EN_ASR_MODELS: dict[str, AsrConfig] = {
         joiner=str(MODELS_DIR / "sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8" / "joiner.int8.onnx"),
         tokens=str(MODELS_DIR / "sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8" / "tokens.txt"),
     ),
+    # Semi-streaming with faster-whisper: cleaned-up output (names, numerals,
+    # no disfluencies) at ~5x Parakeet's compute. encoder = whisper model name.
+    "whisper-semi": AsrConfig(kind="whisper", encoder="large-v3-turbo", decoder="", tokens=""),
 }
 
 

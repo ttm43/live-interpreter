@@ -25,6 +25,7 @@ System audio (speaker loopback, PyAudioWPatch, auto-gain)
   | Model | Avg WER on real clips | Caption update interval | Role |
   |---|---|---|---|
   | parakeet-semi | **best accuracy overall** (LibriSpeech 0%/2.1%; heavy accents ~4x better than any streaming engine) | ~850ms whole-sentence revisions | Semi-streaming: offline Parakeet re-decodes a rolling window; RTF ≈0.4, partials revise rather than grow |
+  | whisper-semi | same tier as parakeet-semi; best names ("Mikhail Fedorov") + digits ("35") + cleans disfluencies | ~5-7s revisions | faster-whisper large-v3-turbo int8. **CPU RTF 0.8-1.3 — can't hold real-time**; also hallucinates ("Thank you.") on music/silence. Kept for comparison |
   | nemotron3.5-1120ms | **≈23% (best streaming on news / keynote / podcast)** | ~1.3s | **Default**; native punctuation + casing |
   | nemo-1040ms | ≈28%; **still best on heavy accents** | ~1.2s | Use for accented speakers |
   | nemotron3.5-320ms | ≈31% | ~500ms | Low-latency compromise |

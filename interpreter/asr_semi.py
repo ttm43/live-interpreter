@@ -25,14 +25,7 @@ class SemiStreamingAsr:
 
     def __init__(self, cfg: AsrConfig):
         self._cfg = cfg
-        self._recognizer = sherpa_onnx.OfflineRecognizer.from_transducer(
-            encoder=cfg.encoder,
-            decoder=cfg.decoder,
-            joiner=cfg.joiner,
-            tokens=cfg.tokens,
-            num_threads=max(cfg.num_threads, 8),
-            model_type="nemo_transducer",
-        )
+        self._load()
         self._buf: list[np.ndarray] = []
         self._buf_s = 0.0
         self._rate = 0
@@ -42,15 +35,29 @@ class SemiStreamingAsr:
         self._decode_gap_s = MIN_DECODE_GAP_S
         self._last_partial = ""
 
+    def _load(self) -> None:
+        self._recognizer = sherpa_onnx.OfflineRecognizer.from_transducer(
+            encoder=self._cfg.encoder,
+            decoder=self._cfg.decoder,
+            joiner=self._cfg.joiner,
+            tokens=self._cfg.tokens,
+            num_threads=max(self._cfg.num_threads, 8),
+            model_type="nemo_transducer",
+        )
+
+    def _decode_samples(self, samples: np.ndarray, rate: int) -> str:
+        stream = self._recognizer.create_stream()
+        stream.accept_waveform(rate, samples)
+        self._recognizer.decode_stream(stream)
+        return stream.result.text.strip()
+
     def _decode(self) -> str:
         t0 = time.monotonic()
-        stream = self._recognizer.create_stream()
-        stream.accept_waveform(self._rate, np.concatenate(self._buf))
-        self._recognizer.decode_stream(stream)
+        text = self._decode_samples(np.concatenate(self._buf), self._rate)
         # Re-decoding a whole window is expensive; space decodes so we never
         # spend more than ~half our time decoding.
         self._decode_gap_s = max(MIN_DECODE_GAP_S, (time.monotonic() - t0) * 1.5)
-        return stream.result.text.strip()
+        return text
 
     def _reset(self) -> None:
         self._buf = []
@@ -120,3 +127,31 @@ class SemiStreamingAsr:
                 self._last_partial = text
                 return [AsrEvent(text=text, is_final=False)]
         return []
+
+
+class WhisperSemiAsr(SemiStreamingAsr):
+    """Semi-streaming with faster-whisper as the offline decoder.
+
+    Same windowing/endpointing as SemiStreamingAsr; whisper brings cleaned-up
+    output (names, digits as numerals, disfluencies removed) at ~5x the
+    compute of Parakeet. cfg.encoder holds the whisper model name.
+    """
+
+    def _load(self) -> None:
+        from faster_whisper import WhisperModel  # heavy import, only if used
+
+        self._model = WhisperModel(
+            self._cfg.encoder or "large-v3-turbo",
+            device="cpu", compute_type="int8",
+            cpu_threads=max(self._cfg.num_threads, 8),
+        )
+
+    def _decode_samples(self, samples: np.ndarray, rate: int) -> str:
+        if rate != 16000:  # faster-whisper expects 16 kHz input arrays
+            n = int(len(samples) * 16000 / rate)
+            samples = np.interp(
+                np.linspace(0.0, len(samples), n, endpoint=False),
+                np.arange(len(samples)), samples,
+            ).astype(np.float32)
+        segments, _ = self._model.transcribe(samples, language="en", beam_size=2)
+        return " ".join(s.text.strip() for s in segments).strip()

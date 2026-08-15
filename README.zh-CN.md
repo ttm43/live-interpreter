@@ -23,6 +23,7 @@
   | 模型 | 真实片段平均 WER | 字幕更新间隔 | 定位 |
   |---|---|---|---|
   | parakeet-semi | **综合精度最高**（LibriSpeech 0%/2.1%；重口音比任何流式引擎好约 4 倍） | ~850ms 整句修订式 | 半流式：离线 Parakeet 滚动窗口重解码；RTF≈0.4，partial 是整句改写而非逐字生长 |
+  | whisper-semi | 与 parakeet-semi 同档；人名（Mikhail Fedorov）和数字（35）最准、自动抹平结巴 | ~5-7s 修订 | faster-whisper large-v3-turbo int8。**CPU RTF 0.8~1.3 撑不住实时**；音乐/静音段会幻觉出 "Thank you."。保留作对比 |
   | nemotron3.5-1120ms | **≈23%（流式引擎中新闻/发布会/播客三项最佳）** | ~1.3s | **默认**；自带标点+大小写 |
   | nemo-1040ms | ≈28%；**重口音场景仍最强** | ~1.2s | 口音重的说话人用这个 |
   | nemotron3.5-320ms | ≈31% | ~500ms | 低延迟折中 |

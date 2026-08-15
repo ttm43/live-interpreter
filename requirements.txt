@@ -2,3 +2,4 @@ sherpa-onnx>=1.13.4
 PyAudioWPatch>=0.2.12.8
 numpy>=2.0
 requests>=2.32
+faster-whisper>=1.2  # optional whisper-semi engine (see README caveats)

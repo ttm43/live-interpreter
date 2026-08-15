@@ -19,6 +19,10 @@ def create_asr(cfg: AsrConfig):
         from .asr_semi import SemiStreamingAsr  # avoid import cycle
 
         return SemiStreamingAsr(cfg)
+    if cfg.kind == "whisper":
+        from .asr_semi import WhisperSemiAsr
+
+        return WhisperSemiAsr(cfg)
     return StreamingAsr(cfg)
 
 
