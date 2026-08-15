@@ -95,13 +95,20 @@ class AutoGain:
         self._target = target_peak
         self._max_gain = max_gain
         self._peak = 0.0
+        self._gain = 1.0
 
     def apply(self, chunk: np.ndarray) -> np.ndarray:
         peak = float(np.max(np.abs(chunk))) if chunk.size else 0.0
         self._peak = max(self._peak * 0.995, peak)
         if self._peak < 1e-4:
             return chunk
-        return chunk * min(self._target / self._peak, self._max_gain)
+        wanted = min(self._target / self._peak, self._max_gain)
+        # Slew-limit gain changes (<=10% per chunk): a jumpy gain modulates
+        # loudness WITHIN an utterance, which wrecks re-decoding ASR engines.
+        self._gain = float(np.clip(wanted, self._gain / 1.1, self._gain * 1.1))
+        # Hard-limit output so a stale (tiny) tracked peak right after silence
+        # can't blast the utterance onset past ±1.
+        return np.clip(chunk * self._gain, -1.0, 1.0)
 
 
 class KeepAliveOutput:

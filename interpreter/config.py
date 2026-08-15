@@ -133,11 +133,11 @@ class AppConfig:
     # NOTE: currently focused on en->zh only; auto/zh are parked until the
     # en->zh path is fully tuned (see README).
     lang_mode: str = "en"
-    # Real-audio bench 2026-07-18: nemotron3.5-1120ms wins 3/4 clips and adds
-    # punctuation + capitalization (better input for translation). Caveat: on
-    # heavily-accented speech nemo-1040ms is still stronger (multilingual
-    # nemotron can hallucinate foreign scripts there).
-    en_asr_model: str = "nemotron3.5-1120ms"
+    # Default combo (2026-08-27): semi-streaming Parakeet finals (best
+    # accuracy of all engines: LibriSpeech 0%/2.1%, ~4x better on accents)
+    # + nemo-80ms fast preview + speculative LLM translation. Streaming
+    # alternative: nemotron3.5-1120ms (lower CPU, native punctuation).
+    en_asr_model: str = "parakeet-semi"
     # Dual-engine: a second fast ASR renders the live partial line (word-by-
     # word feel) while en_asr_model produces the accurate finals that feed
     # translation. Empty string disables the preview engine.

@@ -22,9 +22,9 @@
 
   | 模型 | 真实片段平均 WER | 字幕更新间隔 | 定位 |
   |---|---|---|---|
-  | parakeet-semi | **综合精度最高**（LibriSpeech 0%/2.1%；重口音比任何流式引擎好约 4 倍） | ~850ms 整句修订式 | 半流式：离线 Parakeet 滚动窗口重解码；RTF≈0.4，partial 是整句改写而非逐字生长 |
+  | parakeet-semi | **综合精度最高**（LibriSpeech 0%/2.1%；重口音比任何流式引擎好约 4 倍） | ~850ms 整句修订式 | **默认**定稿引擎（逐字手感由预览引擎负责）；RTF≈0.4 |
   | whisper-semi | 与 parakeet-semi 同档；人名（Mikhail Fedorov）和数字（35）最准、自动抹平结巴 | ~5-7s 修订 | faster-whisper large-v3-turbo int8。**CPU RTF 0.8~1.3 撑不住实时**；音乐/静音段会幻觉出 "Thank you."。保留作对比 |
-  | nemotron3.5-1120ms | **≈23%（流式引擎中新闻/发布会/播客三项最佳）** | ~1.3s | **默认**；自带标点+大小写 |
+  | nemotron3.5-1120ms | **≈23%（流式引擎中新闻/发布会/播客三项最佳）** | ~1.3s | 流式备选；自带标点+大小写，CPU 占用低 5 倍 |
   | nemo-1040ms | ≈28%；**重口音场景仍最强** | ~1.2s | 口音重的说话人用这个 |
   | nemotron3.5-320ms | ≈31% | ~500ms | 低延迟折中 |
   | nemo-80ms | ≈37% | **~330ms** | 逐字感优先 |
@@ -73,11 +73,12 @@
   译音播放的同时节目原声仍被识别翻译。`--no-echo-cancel` 可退回旧门控；
   TTS 输出到独立设备（`--tts-device`）时 AEC 自动停用。
 
-- **音频 LLM 一步直翻（已实验，暂时搁置）**：音频切片直接喂 omni 模型
-  （`bench_omni.py`，llama-server + `input_audio`）。llama.cpp b10437 时点
-  的判决：音频路径尚不可用——Qwen2.5-Omni-7B GGUF 只能听到语音的碎片
-  （维护者确认的移植层问题），gemma-4-E4B 音频初始化即崩溃。等 llama.cpp
-  音频路径成熟或 Ollama 支持音频输入后重启这条线。
+- **音频 LLM 一步直翻（已实验，归档）**：音频切片直接喂 omni 模型。两轮证据：
+  llama.cpp b10437（`bench_omni.py`）——音频路径损坏（Qwen2.5-Omni GGUF 只听到
+  碎片、gemma-4-E4B 初始化崩溃）；transformers（`bench_omni_torch.py`，
+  Qwen2.5-Omni-3B bf16）——听力正常，但 3B 转写会"聊起来"、refine 模式复读草稿，
+  且延迟是硬件级死刑：RTX 5070 Ti 上 15 秒切片要 1.5~13 秒，任何 ≤10B omni
+  都一样。实时用途正式归档，级联胜出。
 
 ## 全新安装（克隆后）
 

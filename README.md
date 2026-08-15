@@ -24,9 +24,9 @@ System audio (speaker loopback, PyAudioWPatch, auto-gain)
 
   | Model | Avg WER on real clips | Caption update interval | Role |
   |---|---|---|---|
-  | parakeet-semi | **best accuracy overall** (LibriSpeech 0%/2.1%; heavy accents ~4x better than any streaming engine) | ~850ms whole-sentence revisions | Semi-streaming: offline Parakeet re-decodes a rolling window; RTF ≈0.4, partials revise rather than grow |
+  | parakeet-semi | **best accuracy overall** (LibriSpeech 0%/2.1%; heavy accents ~4x better than any streaming engine) | ~850ms whole-sentence revisions | **Default** finals engine (word-by-word feel comes from the preview engine); RTF ≈0.4 |
   | whisper-semi | same tier as parakeet-semi; best names ("Mikhail Fedorov") + digits ("35") + cleans disfluencies | ~5-7s revisions | faster-whisper large-v3-turbo int8. **CPU RTF 0.8-1.3 — can't hold real-time**; also hallucinates ("Thank you.") on music/silence. Kept for comparison |
-  | nemotron3.5-1120ms | **≈23% (best streaming on news / keynote / podcast)** | ~1.3s | **Default**; native punctuation + casing |
+  | nemotron3.5-1120ms | **≈23% (best streaming on news / keynote / podcast)** | ~1.3s | Streaming alternative; native punctuation + casing, 5x lower CPU |
   | nemo-1040ms | ≈28%; **still best on heavy accents** | ~1.2s | Use for accented speakers |
   | nemotron3.5-320ms | ≈31% | ~500ms | Low-latency compromise |
   | nemo-80ms | ≈37% | **~330ms** | Word-by-word feel |
@@ -87,12 +87,14 @@ System audio (speaker loopback, PyAudioWPatch, auto-gain)
   talks over it. Disable with `--no-echo-cancel` (falls back to gating);
   AEC auto-disables when TTS plays on a separate device (`--tts-device`).
 
-- **Audio-LLM one-step translation (experimented, parked)**: feeding audio
-  slices straight into an omni model (`bench_omni.py`, llama-server +
-  `input_audio`). Verdict as of llama.cpp b10437: the audio path is not
-  production-ready — Qwen2.5-Omni-7B GGUF hears only fragments of speech
-  (maintainer-confirmed), gemma-4-E4B crashes at audio init. Revisit when
-  llama.cpp audio matures or Ollama gains audio input.
+- **Audio-LLM one-step translation (experimented, archived)**: feeding audio
+  slices straight into an omni model. Two rounds of evidence:
+  llama.cpp b10437 (`bench_omni.py`) — audio path broken (Qwen2.5-Omni GGUF
+  hears fragments, gemma-4-E4B crashes at init); transformers
+  (`bench_omni_torch.py`, Qwen2.5-Omni-3B bf16) — hearing is fine, but 3B
+  chat-contaminates transcripts, the refine mode parrots, and latency is a
+  hardware-level dealbreaker: 1.5-13s per 15s slice on an RTX 5070 Ti, true
+  for any ≤10B omni. Archived for live use; the cascade wins.
 
 ## Fresh install (after cloning)
 
