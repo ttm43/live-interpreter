@@ -109,6 +109,27 @@ class TranslatorConfig:
 
 
 @dataclass(frozen=True)
+class AssistantConfig:
+    """Meeting-assistant mode: intent analysis + reply-direction hints."""
+
+    # Empty string = follow the translator model (already warm in Ollama, so
+    # the assistant adds no extra model load). Point at a larger model (e.g.
+    # "qwen3:14b") for sharper intent reading if you have the VRAM.
+    model: str = ""
+    # The participant's name(s) as others say it in the meeting (e.g.
+    # "Ximing"). Lets the assistant tell "a question for you" apart from "a
+    # question aimed at someone else". Empty = treat any direct question as
+    # possibly aimed at you.
+    user_name: str = ""
+    # Low temperature: the needs-reply / no-reply boundary call must be
+    # consistent; hint variety matters less than judgment stability.
+    temperature: float = 0.2
+    timeout_s: float = 60.0
+    context_segments: int = 12  # rolling transcript window given as context
+    min_chars: int = 12         # skip segments too short to carry intent
+
+
+@dataclass(frozen=True)
 class TtsConfig:
     model: str = str(TTS_MODEL_DIR / "model.onnx")
     voices: str = str(TTS_MODEL_DIR / "voices.bin")
@@ -144,7 +165,12 @@ class AppConfig:
     en_asr_fast_model: str = "nemo-80ms"
     asr: AsrConfig = field(default_factory=AsrConfig)
     translator: TranslatorConfig = field(default_factory=TranslatorConfig)
+    assistant: AssistantConfig = field(default_factory=AssistantConfig)
     tts: TtsConfig = field(default_factory=TtsConfig)
+    # Meeting-assistant mode: per finalized segment, explain the speaker's
+    # intent in Chinese and suggest reply directions when a response is
+    # expected. Runs alongside translation (same LLM by default).
+    enable_assistant: bool = True
     enable_tts: bool = True
     mute_capture_during_tts: bool = True
     # Subtract our own TTS from the capture (digital AEC) instead of gating

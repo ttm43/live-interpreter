@@ -11,6 +11,7 @@ from typing import Callable
 import numpy as np
 
 from .asr import StreamingAsr, create_asr
+from .assistant import MeetingAssistant
 from .audio_capture import AutoGain, KeepAliveOutput, LoopbackCapture
 from .config import ASR_ENGLISH, EN_ASR_MODELS, AppConfig
 from .echo_cancel import EchoCanceller
@@ -31,6 +32,7 @@ class InterpreterPipeline:
         on_final: Callable[[str, str], None] = Noop,          # (text, lang)
         on_translation: Callable[[str, str, float], None] = Noop,  # (text, lang, latency_s)
         on_provisional: Callable[[str, str], None] = Noop,    # (text, lang)
+        on_assist: Callable[[str, float, bool], None] = Noop,  # (analysis, latency_s, is_final)
         on_status: Callable[[str], None] = Noop,
     ):
         self._cfg = cfg
@@ -38,6 +40,7 @@ class InterpreterPipeline:
         self._on_final = on_final
         self._on_translation = on_translation
         self._on_provisional = on_provisional
+        self._on_assist = on_assist
         self._on_status = on_status
         self._spec_text = ""  # newest partial from the accurate engine
         self._stop = threading.Event()
@@ -107,11 +110,25 @@ class InterpreterPipeline:
             queue.Queue(maxsize=8) if cfg.enable_tts else None
         )
 
+        # Meeting-assistant mode: intent + reply hints per finalized segment.
+        self._assistant: MeetingAssistant | None = None
+        self._assist_q: "queue.Queue[tuple[str, float]] | None" = None
+        if cfg.enable_assistant:
+            self._assistant = MeetingAssistant(cfg.assistant, cfg.translator)
+            self._assist_q = queue.Queue(maxsize=16)
+            if cfg.assistant.model and cfg.assistant.model != cfg.translator.model:
+                threading.Thread(target=self._assistant.warm_up, daemon=True).start()
+
         self._threads = [
             threading.Thread(target=self._asr_loop, daemon=True),
             threading.Thread(target=self._translation_worker, daemon=True),
             threading.Thread(target=self._speculative_worker, daemon=True),
         ]
+        if self._assist_q is not None:
+            self._threads.append(threading.Thread(target=self._assist_worker, daemon=True))
+            self._threads.append(
+                threading.Thread(target=self._assist_spec_worker, daemon=True)
+            )
         if self._speech is not None:
             self._threads.append(threading.Thread(target=self._tts_worker, daemon=True))
 
@@ -183,6 +200,16 @@ class InterpreterPipeline:
                         self._segments.get_nowait()  # drop oldest, keep newest
                         self._segments.put_nowait((event.text, time.monotonic()))
                         self._on_status("翻译积压，丢弃最旧片段")
+                    if self._assist_q is not None:
+                        try:
+                            self._assist_q.put_nowait((event.text, time.monotonic()))
+                        except queue.Full:
+                            # The worker coalesces pending segments per LLM
+                            # call, so a full queue means the LLM is far
+                            # behind — drop oldest, the context window in
+                            # MeetingAssistant still records recent history.
+                            self._assist_q.get_nowait()
+                            self._assist_q.put_nowait((event.text, time.monotonic()))
                 else:
                     self._spec_text = event.text
                     if fast is None:
@@ -241,6 +268,58 @@ class InterpreterPipeline:
                     self._speech.put_nowait((translation, dst_lang))
                 except queue.Full:
                     self._on_status("TTS 积压，跳过本段朗读")
+
+    def _assist_worker(self) -> None:
+        """Analyze finalized segments: speaker intent + reply-direction hints.
+
+        Segments that queued up while the previous analysis ran are coalesced
+        into one utterance, so the assistant self-throttles to the LLM's speed
+        instead of falling ever further behind the meeting.
+        """
+        q = self._assist_q
+        while not self._stop.is_set():
+            try:
+                text, t0 = q.get(timeout=0.2)
+            except queue.Empty:
+                continue
+            batch = [text]
+            try:
+                while True:
+                    more, t0 = q.get_nowait()
+                    batch.append(more)
+            except queue.Empty:
+                pass
+            try:
+                analysis = self._assistant.analyze(batch)
+            except Exception as e:  # noqa: BLE001 - keep the pipeline alive
+                self._on_status(f"会议助手分析失败: {e}")
+                continue
+            if analysis:
+                self._on_assist(analysis, time.monotonic() - t0, True)
+
+    def _assist_spec_worker(self) -> None:
+        """Speculative assist: analyze the growing partial before it finalizes.
+
+        Same pattern as _speculative_worker — only ever the newest snapshot,
+        so it self-throttles to the LLM's speed. By the time the speaker
+        finishes the question, a provisional hint is usually already visible;
+        the authoritative analysis replaces it a moment later.
+        """
+        last = ""
+        while not self._stop.is_set():
+            text = self._spec_text
+            if text == last or len(text) < 15:
+                time.sleep(0.15)
+                continue
+            try:
+                hint = self._assistant.analyze_partial(text)
+            except Exception:  # noqa: BLE001 - provisional output is best-effort
+                time.sleep(0.5)
+                continue
+            last = text
+            # Only show it if this partial is still the current utterance.
+            if self._spec_text == text and hint:
+                self._on_assist(hint, 0.0, False)
 
     def _tts_worker(self) -> None:
         from .tts_engine import BilingualTts  # heavy import, load in worker

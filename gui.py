@@ -13,7 +13,12 @@ from tkinter.scrolledtext import ScrolledText
 import requests
 
 from interpreter.audio_capture import get_loopback_devices
-from interpreter.config import EN_ASR_MODELS, AppConfig, TranslatorConfig
+from interpreter.config import (
+    EN_ASR_MODELS,
+    AppConfig,
+    AssistantConfig,
+    TranslatorConfig,
+)
 from interpreter.pipeline import InterpreterPipeline
 
 # -- theme -------------------------------------------------------------------
@@ -50,7 +55,7 @@ class InterpreterGui:
             return [TranslatorConfig().model]
 
     def _build_ui(self) -> None:
-        self.root.title("英中同传 · Live Interpreter")
+        self.root.title("英中同传 · 会议助手 — Live Interpreter")
         self.root.geometry("1240x560")
         self.root.minsize(560, 380)
         self.root.configure(bg=BG)
@@ -83,6 +88,23 @@ class InterpreterGui:
         ttk.Checkbutton(bar, text="朗读译文", variable=self.tts_var).pack(
             side="left", padx=(12, 0)
         )
+
+        # Meeting-assistant mode: intent + reply-direction hints panel.
+        self.assist_var = tk.BooleanVar(value=AppConfig().enable_assistant)
+        ttk.Checkbutton(
+            bar, text="会议助手", variable=self.assist_var,
+            command=self._toggle_assist_panel,
+        ).pack(side="left", padx=(12, 0))
+
+        # The participant's name as colleagues say it — lets the assistant
+        # tell "a question for you" apart from "a question for someone else".
+        ttk.Label(bar, text="称呼:").pack(side="left", padx=(8, 4))
+        self.name_var = tk.StringVar(value=AssistantConfig().user_name)
+        self.name_entry = tk.Entry(
+            bar, textvariable=self.name_var, width=8, bg=BG_PANEL, fg=FG,
+            insertbackground=FG, relief="flat", font=FONT_SMALL,
+        )
+        self.name_entry.pack(side="left", ipady=2)
 
         # 语向暂时固定为 英文 -> 中文（先把这一个方向打磨好）。
         # 恢复三模式时把下面这段解开，并还原 _do_start / _ev_* 里的 mode_box。
@@ -139,12 +161,22 @@ class InterpreterGui:
             bg=BG_PANEL, fg=FG, activebackground="#3a3e47", activeforeground=FG,
             font=FONT_SMALL, relief="flat", cursor="hand2",
         ).pack(side="right", padx=(0, 6))
+        tk.Button(
+            bar, text="背景", command=self._open_background, width=6,
+            bg=BG_PANEL, fg=FG, activebackground="#3a3e47", activeforeground=FG,
+            font=FONT_SMALL, relief="flat", cursor="hand2",
+        ).pack(side="right", padx=(0, 6))
+
+        self.paned = tk.PanedWindow(
+            self.root, orient="horizontal", bg=BG, sashwidth=6, bd=0,
+        )
+        self.paned.pack(fill="both", expand=True, padx=10)
 
         self.text = ScrolledText(
-            self.root, bg=BG_PANEL, fg=FG, insertbackground=FG, wrap="word",
+            self.paned, bg=BG_PANEL, fg=FG, insertbackground=FG, wrap="word",
             font=FONT, relief="flat", padx=12, pady=10, state="disabled",
         )
-        self.text.pack(fill="both", expand=True, padx=10)
+        self.paned.add(self.text, stretch="always", minsize=320)
         self.text.tag_configure("src", foreground=FG)
         self.text.tag_configure("dst", foreground=ACCENT)
         self.text.tag_configure("meta", foreground=FG_DIM, font=FONT_SMALL)
@@ -153,6 +185,33 @@ class InterpreterGui:
         self._partial_active = False
         self._live_src = ""   # speculative view: growing source partial
         self._live_dst = ""   # speculative view: provisional translation
+
+        # Assistant panel: speaker intent + reply-direction hints.
+        self.assist_frame = tk.Frame(self.paned, bg=BG_PANEL)
+        tk.Label(
+            self.assist_frame, text="💡 会议助手 — 对方意图 / 回复方向",
+            bg=BG_PANEL, fg=FG_DIM, font=FONT_SMALL, anchor="w",
+        ).pack(fill="x", padx=12, pady=(8, 0))
+        self.assist_text = ScrolledText(
+            self.assist_frame, bg=BG_PANEL, fg=FG, insertbackground=FG,
+            wrap="word", font=FONT, relief="flat", padx=12, pady=8,
+            state="disabled",
+        )
+        self.assist_text.pack(fill="both", expand=True)
+        self.assist_text.tag_configure(
+            "a_intent", foreground=FG, font=(FONT[0], 11, "bold")
+        )
+        self.assist_text.tag_configure("a_hint", foreground=GREEN)
+        self.assist_text.tag_configure(
+            "a_dim", foreground=FG_DIM, font=(FONT[0], 11, "italic")
+        )
+        self.assist_text.tag_configure("a_meta", foreground=FG_DIM, font=FONT_SMALL)
+        self.assist_text.tag_configure(
+            "a_live", foreground="#5b87b0", font=(FONT[0], 11, "italic")
+        )
+        self._assist_partial_active = False
+        if self.assist_var.get():
+            self.paned.add(self.assist_frame, stretch="always", minsize=280, width=430)
 
         bottom = ttk.Frame(self.root, padding=(12, 6))
         bottom.pack(fill="x")
@@ -168,6 +227,17 @@ class InterpreterGui:
         ).pack(fill="x")
 
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
+
+    def _toggle_assist_panel(self) -> None:
+        """Show/hide the assistant panel. Takes effect on next start if running."""
+        # panes() yields Tcl_Obj items — compare by string path name.
+        shown = str(self.assist_frame) in [str(p) for p in self.paned.panes()]
+        if self.assist_var.get() and not shown:
+            self.paned.add(self.assist_frame, stretch="always", minsize=280, width=430)
+            if self.pipeline and self.pipeline.running:
+                self.status_var.set("会议助手将在下次「开始」时启用")
+        elif not self.assist_var.get() and shown:
+            self.paned.forget(self.assist_frame)
 
     # -- pipeline control (worker threads keep the UI responsive) -------------
 
@@ -192,8 +262,12 @@ class InterpreterGui:
             en_asr_model=self.asr_var.get(),
             en_asr_fast_model="" if fast == "关闭" else fast,
             enable_tts=self.tts_var.get(),
+            enable_assistant=self.assist_var.get(),
             capture_device_index=self.device_map.get(self.device_var.get()),
             translator=dataclasses.replace(TranslatorConfig(), model=self.llm_var.get()),
+            assistant=dataclasses.replace(
+                AssistantConfig(), user_name=self.name_var.get().strip()
+            ),
         )
         pipeline = InterpreterPipeline(
             cfg,
@@ -201,6 +275,7 @@ class InterpreterGui:
             on_final=lambda t, lang: self.events.put(("final", (t, lang))),
             on_translation=lambda t, lang, s: self.events.put(("translation", (t, lang, s))),
             on_provisional=lambda t, lang: self.events.put(("provisional", (t, lang))),
+            on_assist=lambda t, s, f: self.events.put(("assist", (t, s, f))),
             on_status=lambda m: self.events.put(("status", (m,))),
         )
         error = pipeline.check_backend()
@@ -301,6 +376,43 @@ class InterpreterGui:
         self._append(f"      → {text} ", "dst")
         self._append(f"({latency_s:.1f}s)\n\n", "meta")
 
+    def _ev_assist(self, text: str, latency_s: float, is_final: bool) -> None:
+        """Render one analysis in the side panel.
+
+        Provisional analyses (speaker still talking) revise in place as a dim
+        italic block; the authoritative version replaces them on finalize.
+        """
+        w = self.assist_text
+        w.configure(state="normal")
+        self._remove_assist_partial()
+        if is_final:
+            if int(w.index("end-1c").split(".")[0]) > self.MAX_LINES:
+                w.delete("1.0", f"{self.MAX_LINES // 3}.0")
+            for line in text.splitlines():
+                line = line.strip()
+                if not line:
+                    continue
+                if line.startswith("【意图】"):
+                    tag = "a_intent"
+                elif line.startswith("【无需回应】"):
+                    tag = "a_dim"
+                else:  # 【提示】header and its "- 方向 → keywords" bullets
+                    tag = "a_hint"
+                w.insert("end", line + "\n", tag)
+            w.insert("end", f"({latency_s:.1f}s)\n\n", "a_meta")
+        else:
+            w.mark_set("assist_partial_start", "end-1c")
+            w.mark_gravity("assist_partial_start", "left")
+            w.insert("end", f"… {text}\n", "a_live")
+            self._assist_partial_active = True
+        w.see("end")
+        w.configure(state="disabled")
+
+    def _remove_assist_partial(self) -> None:
+        if self._assist_partial_active:
+            self.assist_text.delete("assist_partial_start", "end")
+            self._assist_partial_active = False
+
     def _ev_status(self, msg: str) -> None:
         self.status_var.set(msg)
 
@@ -316,6 +428,18 @@ class InterpreterGui:
         except OSError as e:
             self.status_var.set(f"打开词表失败: {e}")
 
+    def _open_background(self) -> None:
+        """Open background.txt (meeting context for the assistant) in the editor."""
+        import os
+
+        from interpreter.background import BACKGROUND_PATH
+
+        try:
+            os.startfile(str(BACKGROUND_PATH))
+            self.status_var.set("背景资料已打开 — 保存后下一段分析立即生效")
+        except OSError as e:
+            self.status_var.set(f"打开背景资料失败: {e}")
+
     def _clear_transcript(self) -> None:
         self.text.configure(state="normal")
         self.text.delete("1.0", "end")
@@ -323,6 +447,10 @@ class InterpreterGui:
         self._live_src = ""
         self._live_dst = ""
         self.text.configure(state="disabled")
+        self.assist_text.configure(state="normal")
+        self.assist_text.delete("1.0", "end")
+        self._assist_partial_active = False
+        self.assist_text.configure(state="disabled")
         self.partial_var.set("")
 
     MAX_LINES = 600  # keep long sessions from growing the widget unboundedly

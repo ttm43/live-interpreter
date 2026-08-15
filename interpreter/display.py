@@ -34,6 +34,16 @@ class ConsoleDisplay:
             print(f"  -> [{lang}] {text}   ({latency_s:.1f}s)")
             sys.stdout.flush()
 
+    def assist(self, text: str, latency_s: float) -> None:
+        """Meeting-assistant block: speaker intent + reply-direction hints."""
+        with self._lock:
+            self._clear_partial()
+            for line in text.splitlines():
+                if line.strip():
+                    print(f"  💡 {line.strip()}")
+            print(f"     ({latency_s:.1f}s)")
+            sys.stdout.flush()
+
     def info(self, msg: str) -> None:
         with self._lock:
             self._clear_partial()

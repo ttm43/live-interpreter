@@ -70,6 +70,48 @@ System audio (speaker loopback, PyAudioWPatch, auto-gain)
   `kaelri/hy-mt2:1.8b-q8_0`) for a two-tier draft+final setup. The model is
   pre-warmed at session start, so the first segment translates fast.
 
+- **Meeting assistant (on by default)**: built for non-native speakers who
+  need more than a literal translation. Each finalized segment is sent to the
+  LLM together with a rolling window of recent transcript; a side panel shows:
+  - **【意图】 (intent)** — what the speaker is actually driving at, including
+    subtext, stance and tone;
+  - **【提示】 (reply hints)** — when the segment invites a response
+    (a question, a call-out, a request for opinion), 1-3 genuinely different
+    high-level directions (agree & push forward / raise a concern / clarify
+    first), each fully bilingual: the direction as a Chinese phrase plus its
+    simple English wording, then 2-4 keywords each glossed in Chinese (e.g.
+    `risk 风险`) — deliberately not full sentences, and vocabulary capped at
+    everyday words the speaker can't misread or mispronounce; you compose
+    your own reply around the keywords;
+  - **【无需回应】 (no reply needed)** — when the speaker is just stating
+    facts or clearly addressing someone else.
+
+  **Speculative hints** (same idea as speculative translation): while the
+  question is still being asked, the growing partial transcript is already
+  being analyzed — a dim italic provisional hint revises in place, so the
+  directions are usually on screen by the time the speaker stops talking;
+  the authoritative analysis replaces it 2-4s later.
+
+  Fill in the toolbar "称呼" field with the name colleagues call you (e.g.
+  `Ximing`) so the assistant can tell a question aimed at *you* apart from
+  one aimed at someone else.
+
+  **Background file** (GUI "背景" button / `background.txt` in the repo
+  root): before the meeting — or at any point during it — jot down the
+  agenda, who's who, project state, and what you want out of this meeting.
+  Saved edits apply from the next analyzed segment (same hot-reload
+  mechanism as the glossary; `#` lines are comments). The assistant reads
+  intent against this background and bends reply directions toward your
+  stated goals — in testing, writing "avoid committing to a date" flipped
+  all suggested replies from agreeing to risk-assessment-first.
+
+  When the LLM falls behind the meeting, pending
+  segments are coalesced into one analysis, so it always tracks the live
+  discussion. Reuses the translation model by default (no extra VRAM);
+  point `AssistantConfig.model` at a stronger model (e.g. `qwen3:14b`) for
+  sharper intent reading. Untick "会议助手" for pure interpreting;
+  `--no-assist` in the console version.
+
 - **Glossary** (GUI "词表" button / `glossary.txt`): one `source = target`
   entry per line; saving takes effect on the next segment, no restart. Spot a
   mistranslated term → add a line. General LLMs get it via prompt injection,

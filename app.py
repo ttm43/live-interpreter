@@ -34,6 +34,10 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--model", type=str, default=None, help="Ollama model name")
     p.add_argument("--asr", type=str, default=None, help="en ASR engine (see config.EN_ASR_MODELS)")
     p.add_argument(
+        "--no-assist", action="store_true",
+        help="disable the meeting assistant (intent analysis + reply hints)",
+    )
+    p.add_argument(
         "--no-mute-during-tts", action="store_true",
         help="keep capturing while TTS speaks (use when TTS plays on another device)",
     )
@@ -49,6 +53,7 @@ def build_config(args: argparse.Namespace) -> AppConfig:
         lang_mode=args.lang,
         en_asr_model=args.asr or AppConfig.en_asr_model,
         enable_tts=not args.no_tts,
+        enable_assistant=not args.no_assist,
         mute_capture_during_tts=not args.no_mute_during_tts,
         echo_cancel=not args.no_echo_cancel,
         capture_device_index=args.capture_device,
@@ -80,6 +85,8 @@ def main() -> None:
         on_partial=display.partial,
         on_final=display.final_source,
         on_translation=display.translation,
+        # Console has a single partial line (used by ASR); finals only here.
+        on_assist=lambda t, s, is_final: display.assist(t, s) if is_final else None,
         on_status=lambda msg: display.info(f"[info] {msg}"),
     )
     error = pipeline.check_backend()
