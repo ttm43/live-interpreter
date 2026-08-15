@@ -15,7 +15,7 @@ import numpy as np
 
 sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
-from interpreter.asr import StreamingAsr
+from interpreter.asr import create_asr
 from interpreter.config import ASR_EN_MODEL_DIR, EN_ASR_MODELS
 
 CLIPS_DIR = Path(__file__).resolve().parent / "testclips"
@@ -59,7 +59,7 @@ def wer(hyp: str, ref: str) -> float:
 def bench(model_name: str, wav_paths: list[str]) -> None:
     t0 = time.monotonic()
     try:
-        asr = StreamingAsr(EN_ASR_MODELS[model_name])
+        asr = create_asr(EN_ASR_MODELS[model_name])
     except Exception as e:  # noqa: BLE001
         print(f"== {model_name}: LOAD FAILED: {e}")
         return

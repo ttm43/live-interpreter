@@ -73,6 +73,16 @@ EN_ASR_MODELS: dict[str, AsrConfig] = {
     "nemotron3.5-320ms": _nemotron("sherpa-onnx-nemotron-3.5-asr-streaming-0.6b-320ms-int8-2026-06-11"),
     "nemotron3.5-560ms": _nemotron("sherpa-onnx-nemotron-3.5-asr-streaming-0.6b-560ms-int8-2026-06-11"),
     "nemotron3.5-1120ms": _nemotron("sherpa-onnx-nemotron-3.5-asr-streaming-0.6b-1120ms-int8-2026-06-11"),
+    # Semi-streaming: offline Parakeet re-decoding a rolling window. Highest
+    # accuracy (it's our benchmark pseudo-reference model); partials arrive
+    # as whole-sentence revisions instead of word-by-word growth.
+    "parakeet-semi": AsrConfig(
+        kind="offline_transducer",
+        encoder=str(MODELS_DIR / "sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8" / "encoder.int8.onnx"),
+        decoder=str(MODELS_DIR / "sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8" / "decoder.int8.onnx"),
+        joiner=str(MODELS_DIR / "sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8" / "joiner.int8.onnx"),
+        tokens=str(MODELS_DIR / "sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8" / "tokens.txt"),
+    ),
 }
 
 

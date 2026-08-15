@@ -13,6 +13,15 @@ class AsrEvent:
     is_final: bool
 
 
+def create_asr(cfg: AsrConfig):
+    """Factory: streaming transducer/paraformer, or semi-streaming offline."""
+    if cfg.kind == "offline_transducer":
+        from .asr_semi import SemiStreamingAsr  # avoid import cycle
+
+        return SemiStreamingAsr(cfg)
+    return StreamingAsr(cfg)
+
+
 class StreamingAsr:
     """Feed audio chunks in, get partial/final transcript events out."""
 

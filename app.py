@@ -31,7 +31,8 @@ def parse_args() -> argparse.Namespace:
     )
     p.add_argument("--capture-device", type=int, default=None, help="loopback device index")
     p.add_argument("--tts-device", type=int, default=None, help="output device index for TTS")
-    p.add_argument("--model", type=str, default=None, help="Ollama model name (default qwen3:8b)")
+    p.add_argument("--model", type=str, default=None, help="Ollama model name")
+    p.add_argument("--asr", type=str, default=None, help="en ASR engine (see config.EN_ASR_MODELS)")
     p.add_argument(
         "--no-mute-during-tts", action="store_true",
         help="keep capturing while TTS speaks (use when TTS plays on another device)",
@@ -46,6 +47,7 @@ def parse_args() -> argparse.Namespace:
 def build_config(args: argparse.Namespace) -> AppConfig:
     cfg = AppConfig(
         lang_mode=args.lang,
+        en_asr_model=args.asr or AppConfig.en_asr_model,
         enable_tts=not args.no_tts,
         mute_capture_during_tts=not args.no_mute_during_tts,
         echo_cancel=not args.no_echo_cancel,

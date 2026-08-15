@@ -10,7 +10,7 @@ from typing import Callable
 
 import numpy as np
 
-from .asr import StreamingAsr
+from .asr import StreamingAsr, create_asr
 from .audio_capture import AutoGain, KeepAliveOutput, LoopbackCapture
 from .config import ASR_ENGLISH, EN_ASR_MODELS, AppConfig
 from .echo_cancel import EchoCanceller
@@ -75,7 +75,7 @@ class InterpreterPipeline:
             asr_cfg = EN_ASR_MODELS.get(cfg.en_asr_model, ASR_ENGLISH)
         else:
             asr_cfg = cfg.asr
-        self._asr = StreamingAsr(asr_cfg)
+        self._asr = create_asr(asr_cfg)
 
         # Optional fast preview engine (dual-ASR): live partials only.
         self._fast_asr = None
@@ -86,7 +86,7 @@ class InterpreterPipeline:
             and fast_name != cfg.en_asr_model
             and fast_name in EN_ASR_MODELS
         ):
-            self._fast_asr = StreamingAsr(EN_ASR_MODELS[fast_name])
+            self._fast_asr = create_asr(EN_ASR_MODELS[fast_name])
             self._on_status(f"双引擎: 预览 {fast_name} + 定稿 {cfg.en_asr_model}")
 
         self._capture = LoopbackCapture(cfg.capture_device_index)
