@@ -25,21 +25,27 @@ foreach ($m in $models) {
     Remove-Item $tar
 }
 
-Write-Host "[3/4] Ollama 便携版"
-if (-not (Test-Path "$root\libs\ollama\ollama.exe")) {
-    New-Item -ItemType Directory -Force "$root\libs\ollama" | Out-Null
-    $zip = "$root\libs\ollama.zip"
-    curl.exe -sL -o $zip "https://github.com/ollama/ollama/releases/latest/download/ollama-windows-amd64.zip"
-    Expand-Archive -Path $zip -DestinationPath "$root\libs\ollama" -Force
-    Remove-Item $zip
+Write-Host "[3/4] Ollama 便携版（优先复用 ..\shared 的共享安装）"
+$ollamaExe = "$root\..\shared\ollama\ollama.exe"
+$modelsDir = "$root\..\shared\ollama-models"
+if (-not (Test-Path $ollamaExe)) {
+    $ollamaExe = "$root\libs\ollama\ollama.exe"
+    $modelsDir = "$root\models\ollama"
+    if (-not (Test-Path $ollamaExe)) {
+        New-Item -ItemType Directory -Force "$root\libs\ollama" | Out-Null
+        $zip = "$root\libs\ollama.zip"
+        curl.exe -sL -o $zip "https://github.com/ollama/ollama/releases/latest/download/ollama-windows-amd64.zip"
+        Expand-Archive -Path $zip -DestinationPath "$root\libs\ollama" -Force
+        Remove-Item $zip
+    }
 }
 
 Write-Host "[4/4] 翻译模型 (qwen3:4b-instruct 默认; 低内存机器可换 kaelri/hy-mt2:1.8b-q8_0)"
-$env:OLLAMA_MODELS = "$root\models\ollama"
+$env:OLLAMA_MODELS = $modelsDir
 New-Item -ItemType Directory -Force $env:OLLAMA_MODELS | Out-Null
-$serve = Start-Process -FilePath "$root\libs\ollama\ollama.exe" -ArgumentList "serve" -WindowStyle Hidden -PassThru
+$serve = Start-Process -FilePath $ollamaExe -ArgumentList "serve" -WindowStyle Hidden -PassThru
 Start-Sleep -Seconds 4
-& "$root\libs\ollama\ollama.exe" pull qwen3:4b-instruct
+& $ollamaExe pull qwen3:4b-instruct
 
 Write-Host "完成。运行 run_gui.bat 或 python gui.py 启动。"
 Write-Host "可选模型（更高质量/更多对比项）：ollama pull qwen3:14b ；其余 ASR 档位参见 README。"

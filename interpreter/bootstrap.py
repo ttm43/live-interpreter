@@ -13,6 +13,26 @@ from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
+# Ollama is shared infrastructure: prefer a workspace-wide install in
+# <projects-dir>\shared (reused across sibling projects), fall back to a
+# project-local copy (what setup.ps1 creates on a fresh clone).
+SHARED_DIR = PROJECT_ROOT.parent / "shared"
+_OLLAMA_CANDIDATES = [
+    SHARED_DIR / "ollama" / "ollama.exe",
+    PROJECT_ROOT / "libs" / "ollama" / "ollama.exe",
+]
+_MODELS_CANDIDATES = [
+    SHARED_DIR / "ollama-models",
+    PROJECT_ROOT / "models" / "ollama",
+]
+
+
+def find_ollama() -> tuple[Path | None, Path | None]:
+    """(ollama.exe, models dir) — shared install first, project-local second."""
+    exe = next((p for p in _OLLAMA_CANDIDATES if p.exists()), None)
+    models = next((p for p in _MODELS_CANDIDATES if p.exists()), None)
+    return exe, models
+
 
 def ensure_deps() -> None:
     try:
@@ -43,11 +63,11 @@ def ensure_ollama(base_url: str = "http://127.0.0.1:11434") -> bool:
 
     if alive():
         return True
-    exe = PROJECT_ROOT / "libs" / "ollama" / "ollama.exe"
-    if not exe.exists():
+    exe, models = find_ollama()
+    if exe is None:
         return False
     env = os.environ.copy()
-    env["OLLAMA_MODELS"] = str(PROJECT_ROOT / "models" / "ollama")
+    env["OLLAMA_MODELS"] = str(models or PROJECT_ROOT / "models" / "ollama")
     subprocess.Popen(
         [str(exe), "serve"], env=env,
         creationflags=subprocess.CREATE_NO_WINDOW,
