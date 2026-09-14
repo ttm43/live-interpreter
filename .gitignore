@@ -9,3 +9,6 @@ __pycache__/
 # 本地测试产物
 selftest_tts_*.wav
 e2e_*.log
+
+# 私人内容：提前准备的问答题库（gui.py 首次打开时生成模板）
+qa_bank.md

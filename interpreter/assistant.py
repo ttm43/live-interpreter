@@ -19,6 +19,7 @@ import requests
 
 from .background import Background
 from .config import AssistantConfig, TranslatorConfig
+from .qa_bank import QaBank, QaEntry
 
 _SYSTEM_PROMPT = (
     "你是一位坐在中方参会者身边的英语会议助手。参会者能听懂大部分英语，"
@@ -73,6 +74,35 @@ _PARTIAL_NOTE = (
 
 _THINK_RE = re.compile(r"<think>.*?</think>", re.DOTALL)
 
+# -- QA-bank matcher: heard question -> prepared answer -----------------------
+
+_MATCH_SYSTEM_PROMPT = (
+    "你是面试/会议题库匹配器。输入是一份编号题库（每行：编号 | 标题 | 各种"
+    "问法）和刚听到的一段话（ASR 实时转写，可能有识别错误、口头语、不完整）。\n"
+    "先做第一步判断：这段话是在向对面的人提问或提出请求吗？"
+    "如果对方只是在陈述、介绍、说明、闲聊、寒暄——不是问题——直接输出 "
+    "NONE，无论内容和题库多相似，也无论上一次匹配是什么。\n"
+    "是问题时，再判断它是否就是题库中的某一题。允许换措辞、口语化、"
+    "只说了一半，但必须问的是同一件事。题库外的问题输出 NONE——"
+    "宁可不匹配，绝不硬凑。\n"
+    "带小数点的编号（如 5.1）是追问，通常紧跟它的主题（5）之后出现；"
+    "“上一次匹配”仅在这种情况下参考：像 “Another example?”、"
+    "“How did you catch it?” 这类只有几个词的**追问式问题**，"
+    "优先在上一次匹配的题的追问里找。"
+    "一个问题既命中某题的主问法又像它的追问时，输出主题编号。\n"
+    "只输出一个编号（如 5 或 5.1）或 NONE，不要输出任何其他内容。"
+)
+
+_MATCH_ID_RE = re.compile(r"\b(\d+(?:\.\d+)?)\b")
+
+
+def _format_entry(entry: QaEntry) -> str:
+    """Panel block for a matched entry: header line + the prepared answer."""
+    head = f"【题{entry.id}】{entry.title}"
+    if entry.is_followup:
+        head += f" ↳ {entry.questions[0]}"
+    return f"{head}\n{entry.answer}"
+
 
 class MeetingAssistant:
     """Stateful analyzer that keeps a rolling window of the meeting transcript."""
@@ -90,6 +120,8 @@ class MeetingAssistant:
         self._system_prompt = _SYSTEM_PROMPT.format(who=who)
         self._transcript: list[str] = []
         self._background = Background()
+        self._qa = QaBank()
+        self._last_match_id = ""  # follow-up affinity for the matcher
         self._session = requests.Session()
 
     def warm_up(self) -> None:
@@ -117,6 +149,10 @@ class MeetingAssistant:
         self._transcript = transcript[-self._cfg.context_segments * 2:]
         if len(newest) < self._cfg.min_chars:
             return ""
+        entry = self._match_qa(newest, context)
+        if entry is not None:
+            self._last_match_id = entry.group_id
+            return _format_entry(entry)
         parts = self._prompt_parts(context)
         parts.append("最新一段发言：")
         parts.append(newest)
@@ -129,6 +165,12 @@ class MeetingAssistant:
         analyzed (and recorded) separately by analyze().
         """
         context = self._transcript[-self._cfg.context_segments:]
+        # The matcher is cheap (single-token-ish output), so partials go
+        # through it too: a confident early match puts the prepared answer
+        # on screen before the question is even finished.
+        entry = self._match_qa(text, context)
+        if entry is not None:
+            return _format_entry(entry)
         parts = self._prompt_parts(context)
         parts.append(_PARTIAL_NOTE)
         parts.append("正在进行、尚未说完的发言：")
@@ -147,11 +189,51 @@ class MeetingAssistant:
             parts.extend(f"- {seg}" for seg in context)
         return parts
 
+    def _match_qa(self, heard: str, context: list[str]) -> QaEntry | None:
+        """Match the heard utterance against the QA bank; None = no match.
+
+        Best-effort: a matcher failure (or an id the bank doesn't know) just
+        falls through to the generated-hints path — never raises.
+        """
+        index = self._qa.index_text()
+        if not index or len(heard) < self._cfg.min_chars:
+            return None
+        parts = ["题库：", index, ""]
+        if context:
+            parts.append("最近对话（旧→新）：")
+            parts.extend(f"- {seg}" for seg in context[-4:])
+        # Affinity only helps resolve terse follow-ups ("Another example?");
+        # on longer utterances it just drags statements toward a stale match
+        # (verified: with it a mid-meeting statement matched 5.2, without it
+        # the same input is correctly NONE).
+        if self._last_match_id and len(heard) < 60:
+            parts.append(f"上一次匹配：{self._last_match_id}")
+        parts.append(f"刚听到：{heard}")
+        try:
+            out = self._post(
+                [
+                    {"role": "system", "content": _MATCH_SYSTEM_PROMPT},
+                    {"role": "user", "content": "\n".join(parts)},
+                ],
+                temperature=0.0,
+            )
+        except requests.RequestException:
+            return None
+        if "NONE" in out.upper():
+            return None
+        m = _MATCH_ID_RE.search(out)
+        return self._qa.get(m.group(1)) if m else None
+
     def _chat(self, user_content: str) -> str:
-        messages = [
-            {"role": "system", "content": self._system_prompt},
-            {"role": "user", "content": user_content},
-        ]
+        return self._post(
+            [
+                {"role": "system", "content": self._system_prompt},
+                {"role": "user", "content": user_content},
+            ],
+            temperature=self._cfg.temperature,
+        )
+
+    def _post(self, messages: list[dict], temperature: float) -> str:
         r = self._session.post(
             f"{self._base_url}/api/chat",
             json={
@@ -160,7 +242,7 @@ class MeetingAssistant:
                 "stream": False,
                 "think": False,
                 "keep_alive": self._keep_alive,
-                "options": {"temperature": self._cfg.temperature},
+                "options": {"temperature": temperature},
             },
             timeout=self._cfg.timeout_s,
         )

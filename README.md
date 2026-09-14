@@ -86,11 +86,24 @@ System audio (speaker loopback, PyAudioWPatch, auto-gain)
   - **【无需回应】 (no reply needed)** — when the speaker is just stating
     facts or clearly addressing someone else.
 
+  **QA bank** (GUI "题库" button / `qa_bank.md` in the repo root,
+  gitignored): write anticipated questions and your prepared answers ahead
+  of time (`### N. Title` + `**问法：**` variants + answer; `**↳ ...**` for
+  follow-ups). Each heard question first goes through a lightweight matcher
+  (single-id output, ~0.15s): on a hit the panel shows your prepared answer
+  verbatim; no hit means no forcing — it falls back to the generated
+  intent + keyword hints above. Terse follow-ups ("Another example?")
+  resolve via context and the last match. Measured on a 90-entry bank:
+  26/27 mains exact, 0 wrong-group, 9/9 follow-up chains. Hot-reloaded, so
+  you can add entries mid-meeting.
+
   **Speculative hints** (same idea as speculative translation): while the
   question is still being asked, the growing partial transcript is already
   being analyzed — a dim italic provisional hint revises in place, so the
   directions are usually on screen by the time the speaker stops talking;
-  the authoritative analysis replaces it 2-4s later.
+  the authoritative analysis replaces it 2-4s later. QA-bank matching runs
+  in the speculative path too: a mid-question hit puts the prepared answer
+  up early.
 
   Fill in the toolbar "称呼" field with the name colleagues call you (e.g.
   `Ximing`) so the assistant can tell a question aimed at *you* apart from

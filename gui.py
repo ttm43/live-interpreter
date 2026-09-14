@@ -34,6 +34,24 @@ FONT_SMALL = ("Microsoft YaHei UI", 9)
 
 DEFAULT_DEVICE_LABEL = "（默认扬声器）"
 
+# Written to qa_bank.md on first open. The file is gitignored: it holds
+# personal prepared answers, and interpreter/qa_bank.py documents the format.
+_QA_BANK_TEMPLATE = """\
+# 题库 —— 提前准备好的问答，会中实时匹配，随时编辑，保存后下一段生效。
+# 此文件已被 .gitignore 忽略，不会被提交。格式如下（### 编号 + 问法 + 答案）：
+
+### 1. 示例题目（改成你自己的）
+**问法：** Tell me about yourself / Can you give me a bit of background?
+
+在这里写你准备好的答案，任意多段。
+听到匹配的问题时，这段答案会原样显示在助手面板。
+
+**↳ 追问的问法一 / 追问的问法二**
+追问对应的答案写在这里。
+
+---
+"""
+
 
 class InterpreterGui:
     def __init__(self, root: tk.Tk):
@@ -166,6 +184,11 @@ class InterpreterGui:
             bg=BG_PANEL, fg=FG, activebackground="#3a3e47", activeforeground=FG,
             font=FONT_SMALL, relief="flat", cursor="hand2",
         ).pack(side="right", padx=(0, 6))
+        tk.Button(
+            bar, text="题库", command=self._open_qa_bank, width=6,
+            bg=BG_PANEL, fg=FG, activebackground="#3a3e47", activeforeground=FG,
+            font=FONT_SMALL, relief="flat", cursor="hand2",
+        ).pack(side="right", padx=(0, 6))
 
         self.paned = tk.PanedWindow(
             self.root, orient="horizontal", bg=BG, sashwidth=6, bd=0,
@@ -205,6 +228,7 @@ class InterpreterGui:
         self.assist_text.tag_configure(
             "a_dim", foreground=FG_DIM, font=(FONT[0], 11, "italic")
         )
+        self.assist_text.tag_configure("a_body", foreground=FG)
         self.assist_text.tag_configure("a_meta", foreground=FG_DIM, font=FONT_SMALL)
         self.assist_text.tag_configure(
             "a_live", foreground="#5b87b0", font=(FONT[0], 11, "italic")
@@ -392,12 +416,14 @@ class InterpreterGui:
                 line = line.strip()
                 if not line:
                     continue
-                if line.startswith("【意图】"):
+                if line.startswith(("【意图】", "【题")):
                     tag = "a_intent"
                 elif line.startswith("【无需回应】"):
                     tag = "a_dim"
-                else:  # 【提示】header and its "- 方向 → keywords" bullets
+                elif line.startswith(("【提示】", "-", "•")):
                     tag = "a_hint"
+                else:  # prepared-answer body from a QA-bank match
+                    tag = "a_body"
                 w.insert("end", line + "\n", tag)
             w.insert("end", f"({latency_s:.1f}s)\n\n", "a_meta")
         else:
@@ -439,6 +465,20 @@ class InterpreterGui:
             self.status_var.set("背景资料已打开 — 保存后下一段分析立即生效")
         except OSError as e:
             self.status_var.set(f"打开背景资料失败: {e}")
+
+    def _open_qa_bank(self) -> None:
+        """Open qa_bank.md (prepared Q&A, matched live) in the default editor."""
+        import os
+
+        from interpreter.qa_bank import QA_BANK_PATH
+
+        if not QA_BANK_PATH.exists():
+            QA_BANK_PATH.write_text(_QA_BANK_TEMPLATE, encoding="utf-8")
+        try:
+            os.startfile(str(QA_BANK_PATH))
+            self.status_var.set("题库已打开 — 保存后下一段匹配立即生效")
+        except OSError as e:
+            self.status_var.set(f"打开题库失败: {e}")
 
     def _clear_transcript(self) -> None:
         self.text.configure(state="normal")
