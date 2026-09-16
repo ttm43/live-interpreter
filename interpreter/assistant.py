@@ -14,6 +14,7 @@ being spoken; `analyze()` produces the authoritative version once the
 segment finalizes.
 """
 import re
+import threading
 
 import requests
 
@@ -27,7 +28,9 @@ _SYSTEM_PROMPT = (
     "{who}\n"
     "输入是会议的实时转写（ASR 生成，没有说话人标注，可能有识别错误、"
     "口头语或未说完的半句，请结合上下文推断真实含义），"
-    "最后标出的是最新一段发言。发言者是会议中的其他人，不是参会者本人。\n"
+    "最后标出的是最新一段发言。发言者是会议中的其他人，不是参会者本人。"
+    "转写里以“[我]”开头的行是参会者本人的发言（麦克风采集），"
+    "用它判断对方是在追问、回应还是换了话题。\n"
     "参会者可能提供了会议背景资料（议程、与会者角色、项目状态、他此次"
     "开会的目标）。判断意图和回复方向时优先结合背景资料。\n"
     "请只针对最新一段发言，按下面两步输出。\n"
@@ -119,6 +122,7 @@ class MeetingAssistant:
         )
         self._system_prompt = _SYSTEM_PROMPT.format(who=who)
         self._transcript: list[str] = []
+        self._lock = threading.Lock()  # transcript is fed from two threads
         self._background = Background()
         self._qa = QaBank()
         self._last_match_id = ""  # follow-up affinity for the matcher
@@ -144,9 +148,9 @@ class MeetingAssistant:
         newest = " ".join(s.strip() for s in new_segments if s.strip())
         if not newest:
             return ""
-        context = self._transcript[-self._cfg.context_segments:]
-        transcript = self._transcript + [newest]
-        self._transcript = transcript[-self._cfg.context_segments * 2:]
+        with self._lock:
+            context = self._transcript[-self._cfg.context_segments:]
+            self._record(newest)
         if len(newest) < self._cfg.min_chars:
             return ""
         entry = self._match_qa(newest, context)
@@ -164,7 +168,8 @@ class MeetingAssistant:
         Does not touch the rolling transcript; the finalized segment will be
         analyzed (and recorded) separately by analyze().
         """
-        context = self._transcript[-self._cfg.context_segments:]
+        with self._lock:
+            context = self._transcript[-self._cfg.context_segments:]
         # The matcher is cheap (single-token-ish output), so partials go
         # through it too: a confident early match puts the prepared answer
         # on screen before the question is even finished.
@@ -176,6 +181,22 @@ class MeetingAssistant:
         parts.append("正在进行、尚未说完的发言：")
         parts.append(text)
         return self._chat("\n".join(parts))
+
+    def record_own(self, text: str) -> None:
+        """Record the participant's own (microphone) utterance as context.
+
+        Never analyzed — you don't need hints about what you just said — but
+        it lets the assistant read the other side's next turn as a follow-up
+        to your answer rather than a fresh question.
+        """
+        text = text.strip()
+        if text:
+            with self._lock:
+                self._record(f"[我] {text}")
+
+    def _record(self, line: str) -> None:
+        transcript = self._transcript + [line]
+        self._transcript = transcript[-self._cfg.context_segments * 2:]
 
     def _prompt_parts(self, context: list[str]) -> list[str]:
         parts: list[str] = []

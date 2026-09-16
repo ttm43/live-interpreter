@@ -12,10 +12,11 @@ import numpy as np
 
 from .asr import StreamingAsr, create_asr
 from .assistant import MeetingAssistant
-from .audio_capture import AutoGain, KeepAliveOutput, LoopbackCapture
+from .audio_capture import AutoGain, KeepAliveOutput, LoopbackCapture, MicCapture
 from .config import ASR_ENGLISH, EN_ASR_MODELS, AppConfig
 from .echo_cancel import EchoCanceller
-from .translator import OllamaTranslator, detect_lang
+from .dialogue import ME, OTHER, DialogueInterpreter
+from .translator import detect_lang
 
 TTS_TAIL_GUARD_S = 0.4  # keep capture muted briefly after TTS stops
 
@@ -30,9 +31,13 @@ class InterpreterPipeline:
         cfg: AppConfig,
         on_partial: Callable[[str], None] = Noop,
         on_final: Callable[[str, str], None] = Noop,          # (text, lang)
-        on_translation: Callable[[str, str, float], None] = Noop,  # (text, lang, latency_s)
+        # (translation, lang, latency_s, corrected_source, raw_source)
+        on_translation: Callable[[str, str, float, str, str], None] = Noop,
         on_provisional: Callable[[str, str], None] = Noop,    # (text, lang)
         on_assist: Callable[[str, float, bool], None] = Noop,  # (analysis, latency_s, is_final)
+        on_mic_partial: Callable[[str], None] = Noop,
+        on_mic_final: Callable[[str, str], None] = Noop,       # (text, lang)
+        on_mic_translation: Callable[[str, str, float, str, str], None] = Noop,
         on_status: Callable[[str], None] = Noop,
     ):
         self._cfg = cfg
@@ -41,16 +46,20 @@ class InterpreterPipeline:
         self._on_translation = on_translation
         self._on_provisional = on_provisional
         self._on_assist = on_assist
+        self._on_mic_partial = on_mic_partial
+        self._on_mic_final = on_mic_final
+        self._on_mic_translation = on_mic_translation
         self._on_status = on_status
         self._spec_text = ""  # newest partial from the accurate engine
         self._stop = threading.Event()
         self._threads: list[threading.Thread] = []
         self._capture: LoopbackCapture | None = None
+        self._mic: MicCapture | None = None
         self.running = False
 
     def check_backend(self) -> str | None:
         """Returns an error message if Ollama/model are unavailable, else None."""
-        translator = OllamaTranslator(self._cfg.translator)
+        translator = DialogueInterpreter(self._cfg.translator)
         if not translator.ping():
             return (
                 f"Ollama 未运行（{self._cfg.translator.base_url}）。"
@@ -68,9 +77,11 @@ class InterpreterPipeline:
         cfg = self._cfg
         self._stop.clear()
 
-        self._translator = OllamaTranslator(cfg.translator)
-        # Pull the LLM into memory now so the first segment translates fast.
-        threading.Thread(target=self._translator.warm_up, daemon=True).start()
+        # One dialogue-level interpreter shared by both lanes: the other
+        # side's turns give the context that fixes MY ASR errors (and vice
+        # versa). Pull the LLM into memory now so the first segment is fast.
+        self._interp = DialogueInterpreter(cfg.translator)
+        threading.Thread(target=self._interp.warm_up, daemon=True).start()
         self._on_status("正在加载 ASR 模型 ...")
         # English source uses a dedicated en model: far better accuracy and
         # endpointing than the Chinese-dominant bilingual model.
@@ -119,11 +130,30 @@ class InterpreterPipeline:
             if cfg.assistant.model and cfg.assistant.model != cfg.translator.model:
                 threading.Thread(target=self._assistant.warm_up, daemon=True).start()
 
+        # Microphone lane: the user's own speech -> own ASR -> own translator.
+        # Separate translator instance so its rolling history never mixes
+        # with the other side's; optional and non-fatal if no mic exists.
+        self._mic = None
+        self._mic_segments: "queue.Queue[tuple[str, float]]" = queue.Queue(maxsize=16)
+        if cfg.enable_mic:
+            try:
+                self._mic_asr = create_asr(EN_ASR_MODELS.get(cfg.mic_asr_model, asr_cfg))
+                self._mic = MicCapture(cfg.mic_device_index)
+                self._on_status(f"麦克风: {self._mic.device_name}")
+            except Exception as e:  # noqa: BLE001 - degrade to loopback-only
+                self._mic = None
+                self._on_status(f"麦克风启动失败，仅监听系统音频: {e}")
+
         self._threads = [
             threading.Thread(target=self._asr_loop, daemon=True),
             threading.Thread(target=self._translation_worker, daemon=True),
             threading.Thread(target=self._speculative_worker, daemon=True),
         ]
+        if self._mic is not None:
+            self._threads.append(threading.Thread(target=self._mic_loop, daemon=True))
+            self._threads.append(
+                threading.Thread(target=self._mic_translation_worker, daemon=True)
+            )
         if self._assist_q is not None:
             self._threads.append(threading.Thread(target=self._assist_worker, daemon=True))
             self._threads.append(
@@ -133,10 +163,15 @@ class InterpreterPipeline:
             self._threads.append(threading.Thread(target=self._tts_worker, daemon=True))
 
         self._capture.start()
+        if self._mic is not None:
+            self._mic.start()
         for t in self._threads:
             t.start()
         self.running = True
-        self._on_status("运行中 — 正在监听系统音频")
+        self._on_status(
+            "运行中 — 正在监听系统音频 + 麦克风" if self._mic is not None
+            else "运行中 — 正在监听系统音频"
+        )
 
     def stop(self) -> None:
         self._stop.set()
@@ -149,6 +184,12 @@ class InterpreterPipeline:
             except Exception as e:  # noqa: BLE001
                 self._on_status(f"采集关闭异常: {e}")
             self._capture = None
+        if self._mic is not None:
+            try:
+                self._mic.stop()
+            except Exception as e:  # noqa: BLE001
+                self._on_status(f"麦克风关闭异常: {e}")
+            self._mic = None
         if getattr(self, "_keepalive", None) is not None:
             try:
                 self._keepalive.stop()
@@ -215,6 +256,52 @@ class InterpreterPipeline:
                     if fast is None:
                         self._on_partial(event.text)
 
+    def _mic_loop(self) -> None:
+        """Own-speech lane: mic -> AGC -> mic ASR -> pane + assistant context."""
+        capture = self._mic
+        agc = AutoGain()
+        # Frames are dropped while TTS plays (suppress); feed silence so the
+        # endpoint detector still closes an utterance cut off by playback.
+        silence = np.zeros(int(capture.sample_rate * 0.2), dtype=np.float32)
+        while not self._stop.is_set():
+            chunk = capture.read()
+            chunk = silence if chunk is None else agc.apply(chunk)
+            for event in self._mic_asr.accept(chunk, capture.sample_rate):
+                if not event.is_final:
+                    self._on_mic_partial(event.text)
+                    continue
+                if len(event.text) < self._cfg.min_chars_to_translate:
+                    continue
+                self._on_mic_final(event.text, detect_lang(event.text))
+                # Assistant context is fed from the translation worker with
+                # the CORRECTED text ("SWMS", not "swims").
+                try:
+                    self._mic_segments.put_nowait((event.text, time.monotonic()))
+                except queue.Full:
+                    self._mic_segments.get_nowait()  # drop oldest, keep newest
+                    self._mic_segments.put_nowait((event.text, time.monotonic()))
+
+    def _mic_translation_worker(self) -> None:
+        """Own speech through the shared interpreter (corrected + translated)."""
+        while not self._stop.is_set():
+            try:
+                text, t_final = self._mic_segments.get(timeout=0.2)
+            except queue.Empty:
+                continue
+            try:
+                res = self._interp.interpret(text, ME)
+            except Exception as e:  # noqa: BLE001 - keep the pipeline alive
+                self._on_status(f"我方翻译失败: {e}")
+                if self._assistant is not None:
+                    self._assistant.record_own(text)  # raw beats nothing
+                continue
+            if self._assistant is not None:
+                self._assistant.record_own(res.corrected)
+            self._on_mic_translation(
+                res.translation, res.target_lang, time.monotonic() - t_final,
+                res.corrected, text,
+            )
+
     def _speculative_worker(self) -> None:
         """Provisional translation of the growing partial (speculative view).
 
@@ -227,15 +314,9 @@ class InterpreterPipeline:
             if text == last or len(text) < 8:
                 time.sleep(0.1)
                 continue
-            mode = self._cfg.lang_mode
-            if mode == "zh":
-                dst_lang = "en"
-            elif mode == "en":
-                dst_lang = "zh"
-            else:
-                dst_lang = "en" if detect_lang(text) == "zh" else "zh"
+            dst_lang = "en" if detect_lang(text) == "zh" else "zh"
             try:
-                provisional = self._translator.translate_partial(text, dst_lang)
+                provisional = self._interp.translate_partial(text, OTHER)
             except Exception:  # noqa: BLE001 - provisional output is best-effort
                 time.sleep(0.5)
                 continue
@@ -250,22 +331,18 @@ class InterpreterPipeline:
                 text, t_final = self._segments.get(timeout=0.2)
             except queue.Empty:
                 continue
-            mode = self._cfg.lang_mode
-            if mode == "zh":
-                dst_lang = "en"
-            elif mode == "en":
-                dst_lang = "zh"
-            else:
-                dst_lang = "en" if detect_lang(text) == "zh" else "zh"
             try:
-                translation = self._translator.translate(text, target_lang=dst_lang)
+                res = self._interp.interpret(text, OTHER)
             except Exception as e:  # noqa: BLE001 - keep the pipeline alive
                 self._on_status(f"翻译失败: {e}")
                 continue
-            self._on_translation(translation, dst_lang, time.monotonic() - t_final)
-            if self._speech is not None and translation:
+            self._on_translation(
+                res.translation, res.target_lang, time.monotonic() - t_final,
+                res.corrected, text,
+            )
+            if self._speech is not None and res.translation:
                 try:
-                    self._speech.put_nowait((translation, dst_lang))
+                    self._speech.put_nowait((res.translation, res.target_lang))
                 except queue.Full:
                     self._on_status("TTS 积压，跳过本段朗读")
 
@@ -349,6 +426,9 @@ class InterpreterPipeline:
                 )
                 if gated:
                     self._capture.suppress.set()
+                mic = self._mic  # the mic hears our TTS too; never transcribe it
+                if mic is not None:
+                    mic.suppress.set()
                 played = False
                 try:
                     samples, sr = tts.synthesize(text, lang)
@@ -358,10 +438,11 @@ class InterpreterPipeline:
                 except Exception as e:  # noqa: BLE001
                     self._on_status(f"TTS 播放失败: {e}")
                 finally:
-                    if gated:
-                        if played:
-                            time.sleep(TTS_TAIL_GUARD_S)
-                        if self._capture is not None:
-                            self._capture.suppress.clear()
+                    if played and (gated or mic is not None):
+                        time.sleep(TTS_TAIL_GUARD_S)
+                    if gated and self._capture is not None:
+                        self._capture.suppress.clear()
+                    if mic is not None:
+                        mic.suppress.clear()
         finally:
             tts.close()

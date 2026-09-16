@@ -105,7 +105,11 @@ class TranslatorConfig:
     temperature: float = 0.2
     timeout_s: float = 30.0
     keep_alive: str = "30m"
-    history_size: int = 4  # previous segment pairs kept as context
+    history_size: int = 4  # previous segment pairs kept as context (OllamaTranslator)
+    # DialogueInterpreter window: speaker-labelled turns from BOTH sides,
+    # bounded by turn count and total characters (a cheap token budget).
+    history_turns: int = 8
+    history_chars: int = 1500
 
 
 @dataclass(frozen=True)
@@ -179,4 +183,14 @@ class AppConfig:
     echo_cancel: bool = True
     min_chars_to_translate: int = 2
     capture_device_index: int | None = None  # None = default speakers loopback
+    # Microphone lane: transcribe + translate the user's OWN speech into a
+    # separate pane, and feed it to the assistant as "[我]" context so it
+    # knows what you just answered. Use a headset: an open mic also hears
+    # the speakers and would duplicate the other side.
+    enable_mic: bool = True
+    mic_device_index: int | None = None  # None = default WASAPI input
+    # Own ASR instance for the mic (any EN_ASR_MODELS key). parakeet-semi
+    # only spends CPU while speech is present, and in a meeting only one
+    # side talks at a time, so a second instance costs memory, not CPU.
+    mic_asr_model: str = "parakeet-semi"
     tts_output_device_index: int | None = None  # None = default output

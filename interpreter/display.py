@@ -28,10 +28,30 @@ class ConsoleDisplay:
             print(f"[{lang}] {text}")
             sys.stdout.flush()
 
-    def translation(self, text: str, lang: str, latency_s: float) -> None:
+    def translation(
+        self, text: str, lang: str, latency_s: float, corrected: str = "", raw: str = ""
+    ) -> None:
         with self._lock:
             self._clear_partial()
+            if raw and corrected and corrected != raw:
+                print(f"  ✎ {corrected}")
             print(f"  -> [{lang}] {text}   ({latency_s:.1f}s)")
+            sys.stdout.flush()
+
+    def mic_final(self, text: str, lang: str) -> None:
+        with self._lock:
+            self._clear_partial()
+            print(f"[me/{lang}] {text}")
+            sys.stdout.flush()
+
+    def mic_translation(
+        self, text: str, lang: str, latency_s: float, corrected: str = "", raw: str = ""
+    ) -> None:
+        with self._lock:
+            self._clear_partial()
+            if raw and corrected and corrected != raw:
+                print(f"  ✎ {corrected}")
+            print(f"  => [{lang}] {text}   ({latency_s:.1f}s)")
             sys.stdout.flush()
 
     def assist(self, text: str, latency_s: float) -> None:

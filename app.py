@@ -33,6 +33,8 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--tts-device", type=int, default=None, help="output device index for TTS")
     p.add_argument("--model", type=str, default=None, help="Ollama model name")
     p.add_argument("--asr", type=str, default=None, help="en ASR engine (see config.EN_ASR_MODELS)")
+    p.add_argument("--no-mic", action="store_true", help="don't transcribe your own microphone")
+    p.add_argument("--mic-device", type=int, default=None, help="WASAPI input device index")
     p.add_argument(
         "--no-assist", action="store_true",
         help="disable the meeting assistant (intent analysis + reply hints)",
@@ -54,6 +56,8 @@ def build_config(args: argparse.Namespace) -> AppConfig:
         en_asr_model=args.asr or AppConfig.en_asr_model,
         enable_tts=not args.no_tts,
         enable_assistant=not args.no_assist,
+        enable_mic=not args.no_mic,
+        mic_device_index=args.mic_device,
         mute_capture_during_tts=not args.no_mute_during_tts,
         echo_cancel=not args.no_echo_cancel,
         capture_device_index=args.capture_device,
@@ -85,6 +89,8 @@ def main() -> None:
         on_partial=display.partial,
         on_final=display.final_source,
         on_translation=display.translation,
+        on_mic_final=display.mic_final,
+        on_mic_translation=display.mic_translation,
         # Console has a single partial line (used by ASR); finals only here.
         on_assist=lambda t, s, is_final: display.assist(t, s) if is_final else None,
         on_status=lambda msg: display.info(f"[info] {msg}"),

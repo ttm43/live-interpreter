@@ -125,6 +125,47 @@ System audio (speaker loopback, PyAudioWPatch, auto-gain)
   sharper intent reading. Untick "会议助手" for pure interpreting;
   `--no-assist` in the console version.
 
+- **Own-microphone lane (on by default)**: the window is three columns —
+  left = the other side (system audio), middle = *me* (microphone), right =
+  the meeting assistant. Your own speech goes through its own ASR instance;
+  the corrected English plus its translation land in the middle pane, so
+  you can glance at it to check you actually said what you meant. It is also written into the assistant's context tagged `[我]`, so
+  when the other side speaks next the assistant reads it as a follow-up to
+  *your* answer rather than a fresh question. The second toolbar row picks
+  the mic device and its ASR model (default parakeet-semi: it only burns
+  CPU while speech is present, and only one side talks at a time, so the
+  second instance costs memory, not CPU). The mic is muted while TTS plays
+  so your own synthetic voice is never transcribed. **Wear a headset**: an
+  open mic also hears the speakers and would duplicate the other side into
+  the *me* pane. Console: `--no-mic` / `--mic-device N`.
+
+- **Dialogue-level interpreter (`DialogueInterpreter`)**: the two audio
+  lanes no longer run a sentence translator each; they share one
+  speaker-labelled conversation context:
+
+  ```
+  [OTHER] How would you handle an out-of-date SWMS?
+  [ME]    for the swims I would first check who signed it off   <- raw ASR
+  ```
+
+  One inference per finalized utterance returns both the **corrected
+  source** and the **translation** as strict JSON (Ollama `format: json`
+  constrains the decoder — no regex splitting). What ASR mishears most is
+  exactly the proper nouns, acronyms and terms the other side just
+  introduced; `swims -> SWMS` above is only recoverable because the
+  previous turn is in view (measured 0.8s). Pronoun references and
+  dropped subjects benefit the same way. Whether a correction happened is
+  decided in code (case/punctuation-insensitive compare), not by the
+  model; when it did, the raw ASR stays as a dim "原: ..." audit line.
+  Fillers (um/uh) are stripped in code too. The meeting background file
+  is fed to the interpreter as well, so in a construction interview
+  "live site" is a building site, not a production server. The window is
+  bounded by turns and characters (default 8 / 1500); the lock covers
+  only inference + history append, and speculative partials read a
+  snapshot and infer outside it. MT-only models (HY-MT) can't correct,
+  so they fall back to plain translation. The meeting assistant keeps its
+  own independent context and prompt.
+
 - **Glossary** (GUI "词表" button / `glossary.txt`): one `source = target`
   entry per line; saving takes effect on the next segment, no restart. Spot a
   mistranslated term → add a line. General LLMs get it via prompt injection,

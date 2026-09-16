@@ -1,4 +1,4 @@
-"""Tkinter GUI front-end for the live interpreter (en->zh, system audio)."""
+"""Tkinter GUI front-end for the live interpreter (en->zh, system audio + mic)."""
 from interpreter.bootstrap import ensure_deps
 
 ensure_deps()  # allow running with bare system python (deps live in .venv)
@@ -12,7 +12,8 @@ from tkinter.scrolledtext import ScrolledText
 
 import requests
 
-from interpreter.audio_capture import get_loopback_devices
+from interpreter.audio_capture import get_input_devices, get_loopback_devices
+from interpreter.dialogue import is_changed
 from interpreter.config import (
     EN_ASR_MODELS,
     AppConfig,
@@ -33,6 +34,9 @@ FONT = ("Microsoft YaHei UI", 11)
 FONT_SMALL = ("Microsoft YaHei UI", 9)
 
 DEFAULT_DEVICE_LABEL = "（默认扬声器）"
+DEFAULT_MIC_LABEL = "（默认麦克风）"
+
+MAX_LINES = 600  # keep long sessions from growing a text widget unboundedly
 
 # Written to qa_bank.md on first open. The file is gitignored: it holds
 # personal prepared answers, and interpreter/qa_bank.py documents the format.
@@ -51,6 +55,125 @@ _QA_BANK_TEMPLATE = """\
 
 ---
 """
+
+
+def _panel_button(parent: tk.Widget, text: str, command) -> tk.Button:
+    return tk.Button(
+        parent, text=text, command=command, width=6,
+        bg=BG_PANEL, fg=FG, activebackground="#3a3e47", activeforeground=FG,
+        font=FONT_SMALL, relief="flat", cursor="hand2",
+    )
+
+
+class TranscriptPane:
+    """A titled transcript column: finalized source/translation lines plus a
+    live block (growing partial + provisional translation) that revises in
+    place below them. Used for both the other side and the user's own mic.
+    """
+
+    def __init__(self, parent: tk.Widget, title: str):
+        self.frame = tk.Frame(parent, bg=BG_PANEL)
+        tk.Label(
+            self.frame, text=title, bg=BG_PANEL, fg=FG_DIM, font=FONT_SMALL,
+            anchor="w",
+        ).pack(fill="x", padx=12, pady=(8, 0))
+        self.text = ScrolledText(
+            self.frame, bg=BG_PANEL, fg=FG, insertbackground=FG, wrap="word",
+            font=FONT, relief="flat", padx=12, pady=8, state="disabled",
+        )
+        self.text.pack(fill="both", expand=True)
+        self.text.tag_configure("src", foreground=FG)
+        self.text.tag_configure("dst", foreground=ACCENT)
+        self.text.tag_configure("meta", foreground=FG_DIM, font=FONT_SMALL)
+        self.text.tag_configure("live", foreground=FG_DIM, font=(FONT[0], 11, "italic"))
+        self.text.tag_configure("live_dst", foreground="#5b87b0", font=(FONT[0], 11, "italic"))
+        self.text.tag_configure("audit", foreground=FG_DIM, font=FONT_SMALL)
+        self._partial_active = False
+        self._last_raw = ""  # raw ASR of the last finalized source line
+        self._live_src = ""   # speculative view: growing source partial
+        self._live_dst = ""   # speculative view: provisional translation
+
+    # -- events ---------------------------------------------------------------
+
+    def partial(self, text: str) -> None:
+        self._live_src = text
+        self._render_live()
+
+    def provisional(self, text: str) -> None:
+        self._live_dst = text
+        self._render_live()
+
+    def final(self, text: str, lang: str) -> None:
+        # The live block is this utterance's stale preview — drop it; the
+        # authoritative translation follows within a beat.
+        self._live_src = ""
+        self._live_dst = ""
+        self._last_raw = text
+        self.text.configure(state="normal")
+        self._remove_partial()
+        self.text.mark_set("src_start", "end-1c")
+        self.text.mark_gravity("src_start", "left")
+        self.text.configure(state="disabled")
+        self._append(f"[{lang}] {text}\n", "src")
+
+    def translation(
+        self, text: str, lang: str, latency_s: float, corrected: str = "", raw: str = ""
+    ) -> None:
+        # The interpreter fixed the source from dialogue context: promote
+        # the corrected line and keep the raw ASR as a dim audit trail.
+        if raw and raw == self._last_raw and is_changed(raw, corrected):
+            src_lang = "zh" if lang == "en" else "en"
+            self.text.configure(state="normal")
+            self._remove_partial()
+            self.text.delete("src_start", "end-1c")
+            self.text.insert("end", f"[{src_lang}] {corrected}\n", "src")
+            self.text.insert("end", f"      原: {raw}\n", "audit")
+            self.text.configure(state="disabled")
+        self._append(f"      → {text} ", "dst")
+        self._append(f"({latency_s:.1f}s)\n\n", "meta")
+
+    def clear(self) -> None:
+        self.text.configure(state="normal")
+        self.text.delete("1.0", "end")
+        self._partial_active = False
+        self._live_src = ""
+        self._live_dst = ""
+        self.text.configure(state="disabled")
+
+    # -- rendering ------------------------------------------------------------
+
+    def _render_live(self) -> None:
+        """Redraw the speculative two-line block (source + provisional)."""
+        self.text.configure(state="normal")
+        self._remove_partial()
+        if self._live_src or self._live_dst:
+            self.text.mark_set("partial_start", "end-1c")
+            self.text.mark_gravity("partial_start", "left")
+            if self.text.index("end-1c").split(".")[1] != "0":
+                self.text.insert("end", "\n")  # always start on a fresh line
+            if self._live_src:
+                self.text.insert("end", f"… {self._live_src}", "live")
+            if self._live_dst:
+                prefix = "\n" if self._live_src else ""
+                self.text.insert("end", f"{prefix}⇢ {self._live_dst}", "live_dst")
+            self._partial_active = True
+        self.text.see("end")
+        self.text.configure(state="disabled")
+
+    def _remove_partial(self) -> None:
+        if self._partial_active:
+            self.text.delete("partial_start", "end")
+            self._partial_active = False
+
+    def _append(self, text: str, tag: str) -> None:
+        """Append finalized content, then re-draw the live block below it."""
+        self.text.configure(state="normal")
+        if int(self.text.index("end-1c").split(".")[0]) > MAX_LINES:
+            self.text.delete("1.0", f"{MAX_LINES // 3}.0")
+        self._remove_partial()
+        self.text.insert("end", text, tag)
+        self.text.configure(state="disabled")
+        self._render_live()
 
 
 class InterpreterGui:
@@ -74,7 +197,7 @@ class InterpreterGui:
 
     def _build_ui(self) -> None:
         self.root.title("英中同传 · 会议助手 — Live Interpreter")
-        self.root.geometry("1240x560")
+        self.root.geometry("1480x620")
         self.root.minsize(560, 380)
         self.root.configure(bg=BG)
 
@@ -92,7 +215,27 @@ class InterpreterGui:
             foreground=FG, arrowcolor=FG, borderwidth=0,
         )
 
-        bar = ttk.Frame(self.root, padding=(10, 8))
+        self._build_main_bar()
+        self._build_mic_bar()
+        self._build_panes()
+
+        bottom = ttk.Frame(self.root, padding=(12, 6))
+        bottom.pack(fill="x")
+        self.partial_var = tk.StringVar(value="")
+        tk.Label(
+            bottom, textvariable=self.partial_var, bg=BG, fg=FG_DIM,
+            font=(FONT[0], 10, "italic"), anchor="w",
+        ).pack(fill="x")
+        self.status_var = tk.StringVar(value="就绪 — 点击「开始」后播放任何声音即可翻译")
+        tk.Label(
+            bottom, textvariable=self.status_var, bg=BG, fg=FG_DIM,
+            font=FONT_SMALL, anchor="w",
+        ).pack(fill="x")
+
+        self.root.protocol("WM_DELETE_WINDOW", self._on_close)
+
+    def _build_main_bar(self) -> None:
+        bar = ttk.Frame(self.root, padding=(10, 8, 10, 2))
         bar.pack(fill="x")
 
         self.start_btn = tk.Button(
@@ -169,45 +312,61 @@ class InterpreterGui:
         )
         self.device_box.pack(side="left")
 
-        tk.Button(
-            bar, text="清空", command=self._clear_transcript, width=6,
-            bg=BG_PANEL, fg=FG, activebackground="#3a3e47", activeforeground=FG,
-            font=FONT_SMALL, relief="flat", cursor="hand2",
-        ).pack(side="right")
-        tk.Button(
-            bar, text="词表", command=self._open_glossary, width=6,
-            bg=BG_PANEL, fg=FG, activebackground="#3a3e47", activeforeground=FG,
-            font=FONT_SMALL, relief="flat", cursor="hand2",
-        ).pack(side="right", padx=(0, 6))
-        tk.Button(
-            bar, text="背景", command=self._open_background, width=6,
-            bg=BG_PANEL, fg=FG, activebackground="#3a3e47", activeforeground=FG,
-            font=FONT_SMALL, relief="flat", cursor="hand2",
-        ).pack(side="right", padx=(0, 6))
-        tk.Button(
-            bar, text="题库", command=self._open_qa_bank, width=6,
-            bg=BG_PANEL, fg=FG, activebackground="#3a3e47", activeforeground=FG,
-            font=FONT_SMALL, relief="flat", cursor="hand2",
-        ).pack(side="right", padx=(0, 6))
+        _panel_button(bar, "清空", self._clear_transcript).pack(side="right")
+        _panel_button(bar, "词表", self._open_glossary).pack(side="right", padx=(0, 6))
+        _panel_button(bar, "背景", self._open_background).pack(side="right", padx=(0, 6))
+        _panel_button(bar, "题库", self._open_qa_bank).pack(side="right", padx=(0, 6))
 
+    def _build_mic_bar(self) -> None:
+        """Second toolbar row: the user's own microphone lane."""
+        bar = ttk.Frame(self.root, padding=(10, 2, 10, 8))
+        bar.pack(fill="x")
+
+        self.mic_var = tk.BooleanVar(value=AppConfig().enable_mic)
+        ttk.Checkbutton(
+            bar, text="🎤 我（麦克风）", variable=self.mic_var,
+            command=self._toggle_mic_panel,
+        ).pack(side="left")
+
+        ttk.Label(bar, text="设备:").pack(side="left", padx=(16, 4))
+        self.mic_map: dict[str, int | None] = {DEFAULT_MIC_LABEL: None}
+        try:
+            for idx, name in get_input_devices():
+                self.mic_map[f"[{idx}] {name}"] = idx
+        except Exception:  # noqa: BLE001 - device list is a convenience only
+            pass
+        self.mic_device_var = tk.StringVar(value=DEFAULT_MIC_LABEL)
+        self.mic_device_box = ttk.Combobox(
+            bar, textvariable=self.mic_device_var, state="readonly", width=40,
+            values=list(self.mic_map),
+        )
+        self.mic_device_box.pack(side="left")
+
+        ttk.Label(bar, text="识别:").pack(side="left", padx=(16, 4))
+        self.mic_asr_var = tk.StringVar(value=AppConfig().mic_asr_model)
+        self.mic_asr_box = ttk.Combobox(
+            bar, textvariable=self.mic_asr_var, state="readonly", width=16,
+            values=list(EN_ASR_MODELS),
+        )
+        self.mic_asr_box.pack(side="left")
+
+        ttk.Label(
+            bar, text="建议戴耳机：开放式麦克风会把对方的声音也录进来",
+        ).pack(side="left", padx=(16, 0))
+
+    def _build_panes(self) -> None:
         self.paned = tk.PanedWindow(
             self.root, orient="horizontal", bg=BG, sashwidth=6, bd=0,
         )
         self.paned.pack(fill="both", expand=True, padx=10)
 
-        self.text = ScrolledText(
-            self.paned, bg=BG_PANEL, fg=FG, insertbackground=FG, wrap="word",
-            font=FONT, relief="flat", padx=12, pady=10, state="disabled",
-        )
-        self.paned.add(self.text, stretch="always", minsize=320)
-        self.text.tag_configure("src", foreground=FG)
-        self.text.tag_configure("dst", foreground=ACCENT)
-        self.text.tag_configure("meta", foreground=FG_DIM, font=FONT_SMALL)
-        self.text.tag_configure("live", foreground=FG_DIM, font=(FONT[0], 11, "italic"))
-        self.text.tag_configure("live_dst", foreground="#5b87b0", font=(FONT[0], 11, "italic"))
-        self._partial_active = False
-        self._live_src = ""   # speculative view: growing source partial
-        self._live_dst = ""   # speculative view: provisional translation
+        # Left: the other side (system audio). Middle: me (mic). Right: assistant.
+        self.other = TranscriptPane(self.paned, "🔊 对方 — 系统音频")
+        self.paned.add(self.other.frame, stretch="always", minsize=320)
+
+        self.me = TranscriptPane(self.paned, "🎤 我 — 麦克风")
+        if self.mic_var.get():
+            self.paned.add(self.me.frame, stretch="always", minsize=260, width=380)
 
         # Assistant panel: speaker intent + reply-direction hints.
         self.assist_frame = tk.Frame(self.paned, bg=BG_PANEL)
@@ -237,31 +396,33 @@ class InterpreterGui:
         if self.assist_var.get():
             self.paned.add(self.assist_frame, stretch="always", minsize=280, width=430)
 
-        bottom = ttk.Frame(self.root, padding=(12, 6))
-        bottom.pack(fill="x")
-        self.partial_var = tk.StringVar(value="")
-        tk.Label(
-            bottom, textvariable=self.partial_var, bg=BG, fg=FG_DIM,
-            font=(FONT[0], 10, "italic"), anchor="w",
-        ).pack(fill="x")
-        self.status_var = tk.StringVar(value="就绪 — 点击「开始」后播放任何声音即可翻译")
-        tk.Label(
-            bottom, textvariable=self.status_var, bg=BG, fg=FG_DIM,
-            font=FONT_SMALL, anchor="w",
-        ).pack(fill="x")
-
-        self.root.protocol("WM_DELETE_WINDOW", self._on_close)
+    def _pane_shown(self, frame: tk.Widget) -> bool:
+        # panes() yields Tcl_Obj items — compare by string path name.
+        return str(frame) in [str(p) for p in self.paned.panes()]
 
     def _toggle_assist_panel(self) -> None:
         """Show/hide the assistant panel. Takes effect on next start if running."""
-        # panes() yields Tcl_Obj items — compare by string path name.
-        shown = str(self.assist_frame) in [str(p) for p in self.paned.panes()]
+        shown = self._pane_shown(self.assist_frame)
         if self.assist_var.get() and not shown:
             self.paned.add(self.assist_frame, stretch="always", minsize=280, width=430)
             if self.pipeline and self.pipeline.running:
                 self.status_var.set("会议助手将在下次「开始」时启用")
         elif not self.assist_var.get() and shown:
             self.paned.forget(self.assist_frame)
+
+    def _toggle_mic_panel(self) -> None:
+        """Show/hide the mic pane (kept left of the assistant). Applies on next start."""
+        shown = self._pane_shown(self.me.frame)
+        if self.mic_var.get() and not shown:
+            opts = dict(stretch="always", minsize=260, width=380)
+            if self._pane_shown(self.assist_frame):
+                self.paned.add(self.me.frame, before=self.assist_frame, **opts)
+            else:
+                self.paned.add(self.me.frame, **opts)
+            if self.pipeline and self.pipeline.running:
+                self.status_var.set("麦克风将在下次「开始」时启用")
+        elif not self.mic_var.get() and shown:
+            self.paned.forget(self.me.frame)
 
     # -- pipeline control (worker threads keep the UI responsive) -------------
 
@@ -287,20 +448,27 @@ class InterpreterGui:
             en_asr_fast_model="" if fast == "关闭" else fast,
             enable_tts=self.tts_var.get(),
             enable_assistant=self.assist_var.get(),
+            enable_mic=self.mic_var.get(),
+            mic_device_index=self.mic_map.get(self.mic_device_var.get()),
+            mic_asr_model=self.mic_asr_var.get(),
             capture_device_index=self.device_map.get(self.device_var.get()),
             translator=dataclasses.replace(TranslatorConfig(), model=self.llm_var.get()),
             assistant=dataclasses.replace(
                 AssistantConfig(), user_name=self.name_var.get().strip()
             ),
         )
+        ev = self.events.put
         pipeline = InterpreterPipeline(
             cfg,
-            on_partial=lambda t: self.events.put(("partial", (t,))),
-            on_final=lambda t, lang: self.events.put(("final", (t, lang))),
-            on_translation=lambda t, lang, s: self.events.put(("translation", (t, lang, s))),
-            on_provisional=lambda t, lang: self.events.put(("provisional", (t, lang))),
-            on_assist=lambda t, s, f: self.events.put(("assist", (t, s, f))),
-            on_status=lambda m: self.events.put(("status", (m,))),
+            on_partial=lambda t: ev(("partial", (t,))),
+            on_final=lambda t, lang: ev(("final", (t, lang))),
+            on_translation=lambda t, lang, s, c, r: ev(("translation", (t, lang, s, c, r))),
+            on_provisional=lambda t, lang: ev(("provisional", (t, lang))),
+            on_assist=lambda t, s, f: ev(("assist", (t, s, f))),
+            on_mic_partial=lambda t: ev(("mic_partial", (t,))),
+            on_mic_final=lambda t, lang: ev(("mic_final", (t, lang))),
+            on_mic_translation=lambda t, lang, s, c, r: ev(("mic_translation", (t, lang, s, c, r))),
+            on_status=lambda m: ev(("status", (m,))),
         )
         error = pipeline.check_backend()
         if error is None:
@@ -337,6 +505,13 @@ class InterpreterGui:
             pass
         self.root.after(50, self._drain_events)
 
+    @property
+    def _setting_boxes(self) -> tuple[ttk.Combobox, ...]:
+        return (
+            self.device_box, self.asr_box, self.fast_box, self.llm_box,
+            self.mic_device_box, self.mic_asr_box,
+        )
+
     def _ev_started(self, error: str | None) -> None:
         self._busy = False
         self.start_btn.configure(state="normal")
@@ -344,7 +519,7 @@ class InterpreterGui:
             self.status_var.set(f"⚠ {error}")
             return
         self.start_btn.configure(text="■  停止", bg=RED, activebackground="#ffb3ab")
-        for box in (self.device_box, self.asr_box, self.fast_box, self.llm_box):
+        for box in self._setting_boxes:
             box.configure(state="disabled")
 
     def _ev_stopped(self) -> None:
@@ -353,52 +528,33 @@ class InterpreterGui:
         self.start_btn.configure(
             state="normal", text="▶  开始", bg=GREEN, activebackground="#a5f0c5"
         )
-        for box in (self.device_box, self.asr_box, self.fast_box, self.llm_box):
+        for box in self._setting_boxes:
             box.configure(state="readonly")
         self.partial_var.set("")
         self.status_var.set("已停止")
 
+    # other side (system audio)
     def _ev_partial(self, text: str) -> None:
-        self._live_src = text
-        self._render_live()
+        self.other.partial(text)
 
     def _ev_provisional(self, text: str, lang: str) -> None:
-        self._live_dst = text
-        self._render_live()
-
-    def _render_live(self) -> None:
-        """Redraw the speculative two-line block (source + provisional)."""
-        self.text.configure(state="normal")
-        self._remove_partial()
-        if self._live_src or self._live_dst:
-            self.text.mark_set("partial_start", "end-1c")
-            self.text.mark_gravity("partial_start", "left")
-            if self.text.index("end-1c").split(".")[1] != "0":
-                self.text.insert("end", "\n")  # always start on a fresh line
-            if self._live_src:
-                self.text.insert("end", f"… {self._live_src}", "live")
-            if self._live_dst:
-                prefix = "\n" if self._live_src else ""
-                self.text.insert("end", f"{prefix}⇢ {self._live_dst}", "live_dst")
-            self._partial_active = True
-        self.text.see("end")
-        self.text.configure(state="disabled")
-
-    def _remove_partial(self) -> None:
-        if self._partial_active:
-            self.text.delete("partial_start", "end")
-            self._partial_active = False
+        self.other.provisional(text)
 
     def _ev_final(self, text: str, lang: str) -> None:
-        # The live block is this utterance's stale preview — drop it; the
-        # authoritative translation follows within a beat.
-        self._live_src = ""
-        self._live_dst = ""
-        self._append(f"[{lang}] {text}\n", "src")
+        self.other.final(text, lang)
 
-    def _ev_translation(self, text: str, lang: str, latency_s: float) -> None:
-        self._append(f"      → {text} ", "dst")
-        self._append(f"({latency_s:.1f}s)\n\n", "meta")
+    def _ev_translation(self, text: str, lang: str, latency_s: float, corrected: str, raw: str) -> None:
+        self.other.translation(text, lang, latency_s, corrected, raw)
+
+    # me (microphone)
+    def _ev_mic_partial(self, text: str) -> None:
+        self.me.partial(text)
+
+    def _ev_mic_final(self, text: str, lang: str) -> None:
+        self.me.final(text, lang)
+
+    def _ev_mic_translation(self, text: str, lang: str, latency_s: float, corrected: str, raw: str) -> None:
+        self.me.translation(text, lang, latency_s, corrected, raw)
 
     def _ev_assist(self, text: str, latency_s: float, is_final: bool) -> None:
         """Render one analysis in the side panel.
@@ -410,8 +566,8 @@ class InterpreterGui:
         w.configure(state="normal")
         self._remove_assist_partial()
         if is_final:
-            if int(w.index("end-1c").split(".")[0]) > self.MAX_LINES:
-                w.delete("1.0", f"{self.MAX_LINES // 3}.0")
+            if int(w.index("end-1c").split(".")[0]) > MAX_LINES:
+                w.delete("1.0", f"{MAX_LINES // 3}.0")
             for line in text.splitlines():
                 line = line.strip()
                 if not line:
@@ -441,6 +597,8 @@ class InterpreterGui:
 
     def _ev_status(self, msg: str) -> None:
         self.status_var.set(msg)
+
+    # -- user files -----------------------------------------------------------
 
     def _open_glossary(self) -> None:
         """Open glossary.txt in the default editor; edits apply on next segment."""
@@ -481,29 +639,13 @@ class InterpreterGui:
             self.status_var.set(f"打开题库失败: {e}")
 
     def _clear_transcript(self) -> None:
-        self.text.configure(state="normal")
-        self.text.delete("1.0", "end")
-        self._partial_active = False
-        self._live_src = ""
-        self._live_dst = ""
-        self.text.configure(state="disabled")
+        self.other.clear()
+        self.me.clear()
         self.assist_text.configure(state="normal")
         self.assist_text.delete("1.0", "end")
         self._assist_partial_active = False
         self.assist_text.configure(state="disabled")
         self.partial_var.set("")
-
-    MAX_LINES = 600  # keep long sessions from growing the widget unboundedly
-
-    def _append(self, text: str, tag: str) -> None:
-        """Append finalized content, then re-draw the live block below it."""
-        self.text.configure(state="normal")
-        if int(self.text.index("end-1c").split(".")[0]) > self.MAX_LINES:
-            self.text.delete("1.0", f"{self.MAX_LINES // 3}.0")
-        self._remove_partial()
-        self.text.insert("end", text, tag)
-        self.text.configure(state="disabled")
-        self._render_live()
 
 
 def main() -> None:

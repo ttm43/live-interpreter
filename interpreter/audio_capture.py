@@ -84,6 +84,23 @@ class LoopbackCapture:
         self._pa.terminate()
 
 
+class MicCapture(LoopbackCapture):
+    """Captures the user's own voice from a WASAPI input (microphone) device.
+
+    Same chunk/queue/suppress interface as LoopbackCapture, so the pipeline
+    treats both sources identically. Default = the system default input.
+    """
+
+    def _resolve_device(self, device_index: int | None) -> dict:
+        if device_index is not None:
+            return self._pa.get_device_info_by_index(device_index)
+        wasapi = self._pa.get_host_api_info_by_type(pyaudio.paWASAPI)
+        idx = wasapi.get("defaultInputDevice", -1)
+        if idx is None or idx < 0:
+            raise RuntimeError("No default WASAPI input (microphone) device found.")
+        return self._pa.get_device_info_by_index(idx)
+
+
 class AutoGain:
     """Slow-tracking automatic gain so quiet system audio still drives ASR.
 
@@ -166,6 +183,23 @@ def get_loopback_devices() -> list[tuple[int, str]]:
     return devices
 
 
+def get_input_devices() -> list[tuple[int, str]]:
+    """(index, name) pairs of WASAPI microphone/input devices (non-loopback)."""
+    pa = pyaudio.PyAudio()
+    wasapi = pa.get_host_api_info_by_type(pyaudio.paWASAPI)
+    devices = []
+    for i in range(pa.get_device_count()):
+        dev = pa.get_device_info_by_index(i)
+        if (
+            dev["hostApi"] == wasapi["index"]
+            and dev.get("maxInputChannels", 0) > 0
+            and not dev.get("isLoopbackDevice")
+        ):
+            devices.append((dev["index"], dev["name"]))
+    pa.terminate()
+    return devices
+
+
 def list_devices() -> str:
     """Human-readable listing of WASAPI loopback and output devices."""
     pa = pyaudio.PyAudio()
@@ -175,6 +209,9 @@ def list_devices() -> str:
             f"  [{dev['index']}] {dev['name']} "
             f"({int(dev['defaultSampleRate'])} Hz, {dev['maxInputChannels']} ch)"
         )
+    lines.append("-- WASAPI input (microphone) devices --")
+    for idx, name in get_input_devices():
+        lines.append(f"  [{idx}] {name}")
     lines.append("-- Output (playback) devices --")
     for i in range(pa.get_device_count()):
         dev = pa.get_device_info_by_index(i)
