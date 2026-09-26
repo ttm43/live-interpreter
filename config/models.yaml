@@ -1,9 +1,11 @@
 # Declares which registry models this project uses.
 # Resolve with: work/models/model_registry.py  (uses(<project_dir>))
 uses:
+  asr_confucius: confucius4-r2t2-q8_0-gguf    # default en finals engine (llama-server + mmproj)
+  asr_confucius_mmproj: confucius4-r2t2-mmproj-gguf
   asr_zh_en:    sherpa-paraformer-zh-en
   asr_en:       sherpa-zipformer-en
-  asr_offline:  sherpa-parakeet-tdt-0.6b
+  asr_offline:  sherpa-parakeet-tdt-0.6b     # CPU fallback for the finals lanes
   asr_whisper:  whisper-large-v3-turbo      # faster-whisper, pulled from HF cache
   tts:          kokoro-multi-lang-v1_1
   translator:   qwen3-4b-instruct           # ollama; hy-mt2-1.8b on low-memory machines

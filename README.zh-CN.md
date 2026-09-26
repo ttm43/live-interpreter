@@ -11,7 +11,7 @@
 
 ```
 系统音频 (扬声器 loopback, PyAudioWPatch, 自动增益)
-   → 流式 ASR (sherpa-onnx, 带断句; 双引擎, 见下)
+   → ASR: Confucius4-R2T2 定稿 (llama.cpp, GPU) + sherpa-onnx 流式预览 (双引擎, 见下)
    → 翻译 (Ollama 本地推理, 词表干预, 能纠 ASR 错词)
    → 双语 TTS (sherpa-onnx kokoro-multi-lang-v1_1) → 扬声器播放
 ```
@@ -22,7 +22,8 @@
 
   | 模型 | 真实片段平均 WER | 字幕更新间隔 | 定位 |
   |---|---|---|---|
-  | parakeet-semi | **综合精度最高**（LibriSpeech 0%/2.1%；重口音比任何流式引擎好约 4 倍） | ~850ms 整句修订式 | **默认**定稿引擎（逐字手感由预览引擎负责）；RTF≈0.4 |
+  | confucius | **所有引擎中真人标注语料精度最高**：320 条 ESB 会议/电话/播客/朗读语句 WER 9.4%，parakeet-semi 生产路径 12.1%（见下文对决）；自带标点、大小写、数字规整 | ~0.5s 只增不改的预览，定稿 ~0.2s | 2026-09-26 起两条通道的**默认**定稿引擎。有道 Confucius4-R2T2（2B，Q8_0 GGUF）经自动拉起的 llama-server 推理；需要 NVIDIA 显卡（约 2.5GB 显存） |
+  | parakeet-semi | CPU 引擎中精度最高（LibriSpeech 0%/2.1%；重口音比任何流式引擎好约 4 倍） | ~850ms 整句修订式 | 无显卡时的定稿引擎（CPU）；RTF≈0.4 |
   | whisper-semi | 与 parakeet-semi 同档；人名（Mikhail Fedorov）和数字（35）最准、自动抹平结巴 | ~5-7s 修订 | faster-whisper large-v3-turbo int8。**CPU RTF 0.8~1.3 撑不住实时**；音乐/静音段会幻觉出 "Thank you."。保留作对比 |
   | nemotron3.5-1120ms | **≈23%（流式引擎中新闻/发布会/播客三项最佳）** | ~1.3s | 流式备选；自带标点+大小写，CPU 占用低 5 倍 |
   | nemo-1040ms | ≈28%；**重口音场景仍最强** | ~1.2s | 口音重的说话人用这个 |
@@ -36,9 +37,9 @@
   560ms 档 ≈28% 带标点，是单引擎低延迟场景的可选折中。
 
 - **双引擎（默认开启）**：「预览」引擎（默认 nemo-80ms，~240ms 逐字更新）
-  只负责灰色预览行的手感；「识别」引擎（默认 nemotron3.5-1120ms）负责定稿
-  和喂翻译。单模型做不到又快又准，双引擎各取所长，合计 RTF ≈0.25。
-  GUI「预览」下拉框可换预览引擎或选「关闭」回到单引擎。
+  只负责灰色预览行的手感；「识别」引擎（默认 confucius）负责定稿和喂翻译。
+  单模型做不到又快又准，双引擎各取所长。GUI「预览」下拉框可换预览引擎或
+  选「关闭」回到单引擎。
 
 - **翻译模型可切换**（GUI「翻译」下拉框，列出本地 Ollama 全部模型；
   `bench_translate.py` 对比，含 ASR 脏输入测试）。实测结论：
@@ -103,8 +104,9 @@
   英文 + 译文显示在中栏，方便回头确认自己有没有说清楚。同时以 `[我]` 标注写进
   助手的会议上下文，这样对方接着问的时候，助手知道那是对你刚才回答的追问，
   而不是一个新问题。第二行工具栏可选麦克风
-  设备和识别模型（默认 parakeet-semi：它只在有语音时耗 CPU，会上一次只有一个
-  人说话，所以第二个实例只多占内存不多占 CPU）。TTS 朗读时麦克风自动静音，
+  设备和识别模型（默认 confucius：和对方通道共用同一个 llama-server，会上一次
+  只有一个人说话，所以第二个实例几乎不额外花钱；没显卡的机器选 parakeet-semi）。
+  TTS 朗读时麦克风自动静音，
   避免把自己的合成语音转写进来。**建议戴耳机**：开放式麦克风会把扬声器里
   对方的声音也录进「我」这一栏。命令行版 `--no-mic` / `--mic-device N`。
 
@@ -186,6 +188,16 @@ LibriSpeech 上同样显著。Q8_0 GGUF 与 f16 相差 0.2 点以内。算力：
 `confucius4-r2t2-{f16,q8_0,mmproj}-gguf`；llama-server 默认在
 `<workspace>\shared\llama.cpp-b11193`。
 
+**结果——2026-09-26 起已上生产。** `confucius` 是两条通道的默认定稿引擎
+（`interpreter/asr_confucius.py`）。R2T2 原生流式（"最长稳定前缀"：转写只增不改）
+只有 vLLM 后端才有，所以在 llama-server 上模拟：每 ~0.5 秒把这句到目前为止的音频
+连同已提交的转写（作为 assistant 预填）重新发一次，只要 12 个新 token；回复里除最后
+一个词外全部提交（边缘词经常被截在半截、还会被补上一个假句号）。定稿是整句重新
+解码（GPU 上约 0.2 秒），也就是上表测的那条路径；语种通过预填强制
+（`language English<asr_text>`）。llama-server 按需拉起（端口 8091，`-np 2`：每条
+通道一个槽，约 2.5GB 显存），程序退出时一起结束。断句、18 秒窗口上限和空定稿
+的抢救级联与 Parakeet 半流式引擎共用。
+
 ## 全新安装（克隆后）
 
 要求：Windows 10/11，Python 3.10+（3.13 已验证）。项目零编译，不依赖 PyTorch/WSL。
@@ -194,9 +206,12 @@ LibriSpeech 上同样显著。Q8_0 GGUF 与 f16 相差 0.2 点以内。算力：
 powershell -ExecutionPolicy Bypass -File setup.ps1
 ```
 
-脚本会创建 `.venv` 装依赖、下载默认 ASR/TTS 模型（约 1.5GB）、下载 Ollama
-便携版（约 1.4GB）并拉取默认翻译模型 qwen3:4b-instruct（约 2.5GB）。
-表格中的其他候选模型按需另行下载。
+脚本会创建 `.venv` 装依赖、下载 sherpa-onnx ASR/TTS 模型（约 2GB，含无显卡
+时用的 parakeet-semi）、llama.cpp CUDA 预编译版（约 0.5GB；有 `..\shared`
+工作区时放 `..\shared\llama.cpp-b11193`，否则放 `libs\llama.cpp`）、
+Confucius4-R2T2 Q8_0 GGUF + 音频投影器（约 2.4GB）、Ollama 便携版（约 1.4GB），
+并拉取默认翻译模型 qwen3:4b-instruct（约 2.5GB）。表格中的其他候选模型按需
+另行下载。没有 NVIDIA 显卡的机器：「识别」下拉框（和麦克风通道）选 parakeet-semi。
 
 ## 使用
 
@@ -230,6 +245,7 @@ app.py             命令行入口
 interpreter/       各模块：管线编排 / 采集 / ASR / 翻译 / TTS / 显示
 models/            ASR + TTS + Ollama 模型（全部项目内，可整体搬移）
 libs/ollama/       Ollama 便携版（不写注册表，不装系统服务）
+libs/llama.cpp/    跑 Confucius4-R2T2 的 llama-server（或 ..\shared\llama.cpp-b<N>）
 selftest.py        离线自检（ASR 识别测试音频 + TTS 合成试听 wav）
 bench_asr.py       流式 ASR 模型对比（testclips/ 真实音频 + LibriSpeech）
 bench_translate.py 翻译模型对比（安装的 qwen/hunyuan 系自动参战）

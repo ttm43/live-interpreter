@@ -12,7 +12,7 @@ Fully local. No cloud APIs, no WSL, no PyTorch, zero compilation on Windows.
 
 ```
 System audio (speaker loopback, PyAudioWPatch, auto-gain)
-   → Streaming ASR (sherpa-onnx, endpoint detection; dual-engine, see below)
+   → ASR: Confucius4-R2T2 finals (llama.cpp, GPU) + sherpa-onnx streaming preview (dual-engine, see below)
    → Translation (Ollama, local GPU/CPU, glossary-aware, fixes ASR errors)
    → Bilingual TTS (sherpa-onnx kokoro-multi-lang-v1_1) → speakers
 ```
@@ -24,7 +24,8 @@ System audio (speaker loopback, PyAudioWPatch, auto-gain)
 
   | Model | Avg WER on real clips | Caption update interval | Role |
   |---|---|---|---|
-  | parakeet-semi | **best accuracy overall** (LibriSpeech 0%/2.1%; heavy accents ~4x better than any streaming engine) | ~850ms whole-sentence revisions | **Default** finals engine (word-by-word feel comes from the preview engine); RTF ≈0.4 |
+  | confucius | **best of every engine on human-truth speech**: 9.4% WER on 320 ESB meeting/call/podcast/read utterances vs 12.1% for the parakeet-semi lane (see the shoot-out below); punctuated, cased, numerals | ~0.5s append-only partials, ~0.2s per final | **Default** finals engine for both lanes since 2026-09-26. Youdao Confucius4-R2T2 (2B, Q8_0 GGUF) through an auto-started llama-server; needs an NVIDIA GPU (~2.5GB VRAM) |
+  | parakeet-semi | best of the CPU engines (LibriSpeech 0%/2.1%; heavy accents ~4x better than any streaming engine) | ~850ms whole-sentence revisions | CPU fallback finals engine (no GPU needed); RTF ≈0.4 |
   | whisper-semi | same tier as parakeet-semi; best names ("Mikhail Fedorov") + digits ("35") + cleans disfluencies | ~5-7s revisions | faster-whisper large-v3-turbo int8. **CPU RTF 0.8-1.3 — can't hold real-time**; also hallucinates ("Thank you.") on music/silence. Kept for comparison |
   | nemotron3.5-1120ms | **≈23% (best streaming on news / keynote / podcast)** | ~1.3s | Streaming alternative; native punctuation + casing, 5x lower CPU |
   | nemo-1040ms | ≈28%; **still best on heavy accents** | ~1.2s | Use for accented speakers |
@@ -40,10 +41,10 @@ System audio (speaker loopback, PyAudioWPatch, auto-gain)
 
 - **Dual-engine ASR (on by default)**: a fast *preview* engine (nemo-80ms,
   ~240ms word-by-word updates) drives only the gray live-caption line, while
-  the *final* engine (nemotron3.5-1120ms) produces the accurate, punctuated
-  segments that feed translation. No single streaming model is both fast and
-  accurate — the pair gets you both at a combined RTF of ≈0.25. The GUI
-  "预览" dropdown switches or disables the preview engine.
+  the *final* engine (confucius) produces the accurate, punctuated segments
+  that feed translation. No single streaming model is both fast and
+  accurate — the pair gets you both. The GUI "预览" dropdown switches or
+  disables the preview engine.
 
 - **Switchable translation models** (GUI "翻译" dropdown lists everything
   installed in Ollama; compare with `bench_translate.py`, which includes
@@ -132,9 +133,10 @@ System audio (speaker loopback, PyAudioWPatch, auto-gain)
   you can glance at it to check you actually said what you meant. It is also written into the assistant's context tagged `[我]`, so
   when the other side speaks next the assistant reads it as a follow-up to
   *your* answer rather than a fresh question. The second toolbar row picks
-  the mic device and its ASR model (default parakeet-semi: it only burns
-  CPU while speech is present, and only one side talks at a time, so the
-  second instance costs memory, not CPU). The mic is muted while TTS plays
+  the mic device and its ASR model (default confucius: it shares the one
+  llama-server with the other side's lane, and only one side talks at a
+  time, so the second instance is nearly free; pick parakeet-semi on a
+  machine without a GPU). The mic is muted while TTS plays
   so your own synthetic voice is never transcribed. **Wear a headset**: an
   open mic also hears the speakers and would duplicate the other side into
   the *me* pane. Console: `--no-mic` / `--mic-device N`.
@@ -244,6 +246,20 @@ Reproduce: `esb_sample.py` (writes `testclips/esb/`), then
 `confucius4-r2t2-{f16,q8_0,mmproj}-gguf`; llama-server is expected at
 `<workspace>\shared\llama.cpp-b11193`.
 
+**Outcome — in production since 2026-09-26.** `confucius` is the default
+finals engine for both lanes (`interpreter/asr_confucius.py`). R2T2's native
+streaming ("longest stable prefix": the transcript only ever grows) exists
+only in its vLLM backend, so it is emulated over llama-server: every ~0.5 s
+the utterance audio so far is re-sent with the committed transcript as an
+assistant prefill and a 12-token budget; all but the last word of the reply
+are committed (the edge word is often cut mid-way and closed with a spurious
+period). Finals are a fresh whole-utterance decode (~0.2 s on the GPU), the
+same path the numbers above measured; the language is forced through the
+prefill (`language English<asr_text>`). llama-server is started on demand
+(port 8091, `-np 2`: one slot per lane, ~2.5 GB VRAM) and terminated when
+the app exits. Endpointing, the 18 s window cap and the empty-final rescue
+cascade are shared with the Parakeet semi-streaming engine.
+
 ## Fresh install (after cloning)
 
 Requirements: Windows 10/11, Python 3.10+ (3.13 verified). Zero compilation,
@@ -253,10 +269,15 @@ no PyTorch/WSL required.
 powershell -ExecutionPolicy Bypass -File setup.ps1
 ```
 
-The script creates `.venv` and installs dependencies, downloads the default
-ASR/TTS models (~1.5GB) and the portable Ollama runtime (~1.4GB), then pulls
-the default translation model qwen3:4b-instruct (~2.5GB). Other candidate
-models from the tables above can be downloaded on demand.
+The script creates `.venv` and installs dependencies, downloads the
+sherpa-onnx ASR/TTS models (~2GB, incl. the parakeet-semi CPU fallback), the
+llama.cpp CUDA build (~0.5GB, into `..\shared\llama.cpp-b11193` when a
+`..\shared` workspace exists, else `libs\llama.cpp`), the Confucius4-R2T2
+Q8_0 GGUF + audio projector (~2.4GB) and the portable Ollama runtime (~1.4GB),
+then pulls the default translation model qwen3:4b-instruct (~2.5GB). Other
+candidate models from the tables above can be downloaded on demand. Machines
+without an NVIDIA GPU: pick `parakeet-semi` in the 识别 dropdown (and for the
+mic lane).
 
 ## Usage
 
@@ -293,6 +314,7 @@ app.py             CLI entry point
 interpreter/       modules: pipeline / capture / ASR / translation / TTS / display
 models/            ASR + TTS + Ollama models (all project-local, fully portable)
 libs/ollama/       portable Ollama (no registry writes, no system service)
+libs/llama.cpp/    llama-server for Confucius4-R2T2 (or ..\shared\llama.cpp-b<N>)
 selftest.py        offline self-test (ASR on bundled wavs + TTS synthesis)
 bench_asr.py       streaming-ASR shootout (real clips in testclips/ + LibriSpeech)
 bench_translate.py translation shootout (installed qwen/hunyuan models auto-enter)

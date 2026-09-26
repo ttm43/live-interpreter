@@ -23,6 +23,10 @@ def create_asr(cfg: AsrConfig):
         from .asr_semi import WhisperSemiAsr
 
         return WhisperSemiAsr(cfg)
+    if cfg.kind == "confucius":
+        from .asr_confucius import ConfuciusAsr
+
+        return ConfuciusAsr(cfg)
     return StreamingAsr(cfg)
 
 

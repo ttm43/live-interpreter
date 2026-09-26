@@ -23,6 +23,12 @@ class AsrConfig:
     rule1_min_trailing_silence: float = 2.4   # silence with no decoded text
     rule2_min_trailing_silence: float = 0.9   # silence after some decoded text
     rule3_min_utterance_length: float = 18.0  # hard cap on utterance length
+    # kind="confucius" (llama-server backed): registry keys of the text GGUF
+    # and the audio projector, forced language, server port.
+    model_key: str = ""
+    mmproj_key: str = ""
+    language: str = ""
+    server_port: int = 8091
 
 
 # Chinese-dominant bilingual model: use for zh->en and mixed/auto mode.
@@ -83,9 +89,32 @@ EN_ASR_MODELS: dict[str, AsrConfig] = {
         joiner=str(MODELS_DIR / "sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8" / "joiner.int8.onnx"),
         tokens=str(MODELS_DIR / "sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8" / "tokens.txt"),
     ),
+    # Same model, fp32 export (registry: sherpa-parakeet-tdt-0.6b-fp32).
+    # Tested 2026-09-26 as a fix for int8's empty outputs on some waveforms:
+    # it is not one (5/10 still empty) and ~60% slower; kept for
+    # bench_confucius.py --parakeet-engine. The rescue cascade in asr_semi.py
+    # is the actual fix.
+    "parakeet-semi-fp32": AsrConfig(
+        kind="offline_transducer",
+        encoder=str(MODELS_DIR / "sherpa-onnx-nemo-parakeet-tdt-0.6b-v3" / "encoder.onnx"),
+        decoder=str(MODELS_DIR / "sherpa-onnx-nemo-parakeet-tdt-0.6b-v3" / "decoder.onnx"),
+        joiner=str(MODELS_DIR / "sherpa-onnx-nemo-parakeet-tdt-0.6b-v3" / "joiner.onnx"),
+        tokens=str(MODELS_DIR / "sherpa-onnx-nemo-parakeet-tdt-0.6b-v3" / "tokens.txt"),
+    ),
     # Semi-streaming with faster-whisper: cleaned-up output (names, numerals,
     # no disfluencies) at ~5x Parakeet's compute. encoder = whisper model name.
     "whisper-semi": AsrConfig(kind="whisper", encoder="large-v3-turbo", decoder="", tokens=""),
+    # Youdao Confucius4-R2T2 over llama-server (GPU): best accuracy of every
+    # engine on human-truth meeting/call speech (bench 2026-09-26: ALL 9.4%
+    # vs 12.1% for the Parakeet production lane), punctuated + cased output,
+    # append-only streaming partials, ~0.2 s per final. Q8_0 == f16 quality.
+    "confucius": AsrConfig(
+        kind="confucius",
+        encoder="", decoder="", tokens="",
+        model_key="confucius4-r2t2-q8_0-gguf",
+        mmproj_key="confucius4-r2t2-mmproj-gguf",
+        language="English",
+    ),
 }
 
 
@@ -158,11 +187,10 @@ class AppConfig:
     # NOTE: currently focused on en->zh only; auto/zh are parked until the
     # en->zh path is fully tuned (see README).
     lang_mode: str = "en"
-    # Default combo (2026-08-27): semi-streaming Parakeet finals (best
-    # accuracy of all engines: LibriSpeech 0%/2.1%, ~4x better on accents)
-    # + nemo-80ms fast preview + speculative LLM translation. Streaming
-    # alternative: nemotron3.5-1120ms (lower CPU, native punctuation).
-    en_asr_model: str = "parakeet-semi"
+    # Default (2026-09-26): Confucius4-R2T2 finals over llama-server (GPU;
+    # beat the Parakeet lane on every human-truth subset) + nemo-80ms fast
+    # preview + speculative LLM translation. CPU fallback: parakeet-semi.
+    en_asr_model: str = "confucius"
     # Dual-engine: a second fast ASR renders the live partial line (word-by-
     # word feel) while en_asr_model produces the accurate finals that feed
     # translation. Empty string disables the preview engine.
@@ -189,8 +217,8 @@ class AppConfig:
     # the speakers and would duplicate the other side.
     enable_mic: bool = True
     mic_device_index: int | None = None  # None = default WASAPI input
-    # Own ASR instance for the mic (any EN_ASR_MODELS key). parakeet-semi
-    # only spends CPU while speech is present, and in a meeting only one
-    # side talks at a time, so a second instance costs memory, not CPU.
-    mic_asr_model: str = "parakeet-semi"
+    # Own ASR instance for the mic (any EN_ASR_MODELS key). "confucius"
+    # shares the one llama-server (-np 2 slots) with the system-audio lane;
+    # in a meeting only one side talks at a time. CPU fallback: parakeet-semi.
+    mic_asr_model: str = "confucius"
     tts_output_device_index: int | None = None  # None = default output
