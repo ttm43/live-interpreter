@@ -141,6 +141,14 @@ System audio (speaker loopback, PyAudioWPatch, auto-gain)
   open mic also hears the speakers and would duplicate the other side into
   the *me* pane. Console: `--no-mic` / `--mic-device N`.
 
+- **Meeting log**: every session writes `logs/meeting-<start time>.log` —
+  both lanes' finals, each translation (with the corrected source when the
+  interpreter changed it), the assistant's verdicts and the status lines, one
+  tab-separated event per line with wall-clock time and offset — so a meeting
+  can be reviewed afterwards (the GUI runs under `pythonw` and would
+  otherwise leave nothing behind). Partials are not logged.
+  `AppConfig.meeting_log_dir = ""` turns it off.
+
 - **Dialogue-level interpreter (`DialogueInterpreter`)**: the two audio
   lanes no longer run a sentence translator each; they share one
   speaker-labelled conversation context:

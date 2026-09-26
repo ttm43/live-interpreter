@@ -222,3 +222,7 @@ class AppConfig:
     # in a meeting only one side talks at a time. CPU fallback: parakeet-semi.
     mic_asr_model: str = "confucius"
     tts_output_device_index: int | None = None  # None = default output
+    # Per-session transcript for post-meeting review (finals of both lanes,
+    # translations, assistant verdicts, status), one file per start() under
+    # <project>/<dir>/meeting-<start time>.log. "" disables it.
+    meeting_log_dir: str = "logs"

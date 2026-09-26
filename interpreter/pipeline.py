@@ -16,6 +16,8 @@ from .audio_capture import AutoGain, KeepAliveOutput, LoopbackCapture, MicCaptur
 from .config import ASR_ENGLISH, EN_ASR_MODELS, AppConfig
 from .echo_cancel import EchoCanceller
 from .dialogue import ME, OTHER, DialogueInterpreter
+from .meeting_log import (MeetingLog, fmt_assist, fmt_final, fmt_mic_final, fmt_mic_translation,
+                          fmt_status, fmt_translation)
 from .translator import detect_lang
 
 TTS_TAIL_GUARD_S = 0.4  # keep capture muted briefly after TTS stops
@@ -56,6 +58,15 @@ class InterpreterPipeline:
         self._capture: LoopbackCapture | None = None
         self._mic: MicCapture | None = None
         self.running = False
+        # Per-session transcript (logs/meeting-*.log) for post-meeting review:
+        # tee the lane callbacks into it. Opened in start(), closed in stop().
+        self._mlog = MeetingLog(cfg.meeting_log_dir)
+        self._on_final = self._mlog.tee(self._on_final, fmt_final)
+        self._on_translation = self._mlog.tee(self._on_translation, fmt_translation)
+        self._on_mic_final = self._mlog.tee(self._on_mic_final, fmt_mic_final)
+        self._on_mic_translation = self._mlog.tee(self._on_mic_translation, fmt_mic_translation)
+        self._on_assist = self._mlog.tee(self._on_assist, fmt_assist)
+        self._on_status = self._mlog.tee(self._on_status, fmt_status)
 
     def check_backend(self) -> str | None:
         """Returns an error message if Ollama/model are unavailable, else None."""
@@ -76,6 +87,14 @@ class InterpreterPipeline:
         """Loads models and starts all worker threads. Raises on fatal errors."""
         cfg = self._cfg
         self._stop.clear()
+        path = self._mlog.open(
+            f"finals={cfg.en_asr_model} preview={cfg.en_asr_fast_model} "
+            f"mic={cfg.mic_asr_model} translator={cfg.translator.model}"
+        )
+        if path is not None:
+            self._on_status(f"会议日志: {path}")
+        elif self._mlog.error:
+            self._on_status(f"会议日志无法创建: {self._mlog.error}")
 
         # One dialogue-level interpreter shared by both lanes: the other
         # side's turns give the context that fixes MY ASR errors (and vice
@@ -198,6 +217,7 @@ class InterpreterPipeline:
             self._keepalive = None
         self.running = False
         self._on_status("已停止")
+        self._mlog.close()
 
     # -- worker loops --------------------------------------------------------
 
