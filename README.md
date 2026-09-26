@@ -192,6 +192,58 @@ System audio (speaker loopback, PyAudioWPatch, auto-gain)
   hardware-level dealbreaker: 1.5-13s per 15s slice on an RTX 5070 Ti, true
   for any ≤10B omni. Archived for live use; the cascade wins.
 
+## ASR shoot-out: Youdao Confucius4-R2T2 vs the production lane (2026-09-26)
+
+[Confucius4-R2T2](https://github.com/netease-youdao/Confucius4-R2T2) is NetEase
+Youdao's true-streaming ASR (a Qwen3-ASR-1.7B fine-tune with append-only
+"longest stable prefix" output). Its streaming mode is vLLM-only (Linux), but
+the official GGUF runs offline on Windows through llama.cpp — and unlike the
+Omni models, llama.cpp's audio path for the Qwen3-ASR family is intact.
+
+**Test set** (`esb_sample.py`): 320 human-transcribed utterances, 35 min, from
+the Open ASR Leaderboard test sets — AMI meetings, Earnings-22 calls,
+GigaSpeech, LibriSpeech-clean (80 each, sampled across the duration
+distribution, capped per recording). Every lane gets the same AGC-conditioned
+audio the live pipeline produces. **Verbatim** WER uses the Whisper English
+normaliser on both sides; **fluent** WER additionally collapses repeats and
+fillers on both sides (verbatim references keep "or or", "you know").
+
+| corpus WER % | Confucius (alone) | Parakeet offline | Parakeet + 4B correction | **Production lane** (semi-streaming + AGC + correction) |
+|---|---|---|---|---|
+| AMI meetings | **12.1** | 13.3 | 15.3 | 20.0 |
+| Earnings-22 | **14.2** | 15.3 | 14.8 | 17.0 |
+| GigaSpeech | **10.7** | 10.9 | 11.0 | 11.3 |
+| LibriSpeech-clean | **1.3** | 3.0 | 3.2 | 3.8 |
+| **ALL (verbatim)** | **9.4** | 10.4 | 10.6 | 12.1 |
+| **ALL (fluent)** | **8.1** | 9.7 | 9.9 | 11.1 |
+
+Confucius vs production: 95% cluster-bootstrap CI on ALL is [−4.3, −1.2]
+(significant), also significant on AMI and LibriSpeech. Q8_0 GGUF scores
+within 0.2 pt of f16. Compute: Confucius 0.03 s per audio second on the GPU
+(whole-utterance), production semi-streaming 0.31 s/s on CPU.
+
+Findings:
+1. **Confucius alone beats the current ASR + LLM-correction lane on every
+   subset**, by the most on meeting speech, and its output is already
+   punctuated, cased and number-normalised.
+2. **The 4B correction step fixes ≈0 real errors** on general speech and costs
+   1–2 pt on meetings (rewrites, de-duplication penalised by verbatim
+   references). Its designed value — cross-channel term context — is not
+   measurable on isolated utterances.
+3. **Production-lane defect**: the semi-streaming Parakeet path is ~2 pt worse
+   than whole-utterance Parakeet (6.6 pt on AMI) and produced *no final at all*
+   on 8 short, perfectly clear utterances. Root cause: Parakeet int8 returns an
+   empty string on certain input waveforms (reproducible; ×4 gain or a
+   different window cures it); the semi-streaming windows (pre-roll + zero
+   padding) hit that mode more often. The pipeline's AGC is what keeps the
+   rest working.
+
+Reproduce: `esb_sample.py` (writes `testclips/esb/`), then
+`bench_confucius.py [--quant f16|Q8_0] [--skip-llm]`; per-utterance output in
+`testclips/esb/results_<quant>.jsonl`. Model files are registry keys
+`confucius4-r2t2-{f16,q8_0,mmproj}-gguf`; llama-server is expected at
+`<workspace>\shared\llama.cpp-b11193`.
+
 ## Fresh install (after cloning)
 
 Requirements: Windows 10/11, Python 3.10+ (3.13 verified). Zero compilation,

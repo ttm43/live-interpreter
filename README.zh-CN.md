@@ -146,6 +146,46 @@
   且延迟是硬件级死刑：RTX 5070 Ti 上 15 秒切片要 1.5~13 秒，任何 ≤10B omni
   都一样。实时用途正式归档，级联胜出。
 
+## ASR 对决：有道 Confucius4-R2T2 vs 生产管线（2026-09-26）
+
+[Confucius4-R2T2](https://github.com/netease-youdao/Confucius4-R2T2) 是网易有道的
+真流式 ASR（Qwen3-ASR-1.7B 微调，输出"最长稳定前缀"只追加不回改）。它的流式模式只有
+vLLM 后端（Linux），但官方 GGUF 可以在 Windows 上用 llama.cpp 离线跑——和 Omni 系不同，
+llama.cpp 对 Qwen3-ASR 家族的音频路径是完好的。
+
+**测试集**（`esb_sample.py`）：Open ASR 排行榜测试集的 320 条人工标注语音、35 分钟——
+AMI 会议 / Earnings-22 财报会 / GigaSpeech / LibriSpeech-clean 各 80 条，跨时长分布抽样、
+按录音限额。所有赛道吃同样的、经过管线 AGC 的音频。**逐字 WER** 对双方用 Whisper 英文
+规整器；**容忍口语 WER** 再对双方折叠重复词和语气词（逐字参考里保留着 "or or"、"you know"）。
+
+| 语料 WER % | Confucius 单独 | Parakeet 离线 | Parakeet + 4B 纠错 | **生产路径**（半流式 + AGC + 纠错） |
+|---|---|---|---|---|
+| AMI 会议 | **12.1** | 13.3 | 15.3 | 20.0 |
+| Earnings-22 | **14.2** | 15.3 | 14.8 | 17.0 |
+| GigaSpeech | **10.7** | 10.9 | 11.0 | 11.3 |
+| LibriSpeech-clean | **1.3** | 3.0 | 3.2 | 3.8 |
+| **合计（逐字）** | **9.4** | 10.4 | 10.6 | 12.1 |
+| **合计（容忍口语）** | **8.1** | 9.7 | 9.9 | 11.1 |
+
+Confucius 对生产路径：合计的 95% 聚类 bootstrap 置信区间 [−4.3, −1.2]（显著），AMI 和
+LibriSpeech 上同样显著。Q8_0 GGUF 与 f16 相差 0.2 点以内。算力：Confucius GPU 整段解码
+每秒音频 0.03 秒，生产半流式 CPU 0.31 秒。
+
+结论：
+1. **Confucius 单模型在每个子集上都赢过现有的"ASR + LLM 纠错"**，会议语音领先最多，且输出
+   自带标点、大小写和数字规整。
+2. **4B 纠错对真实错误的修复 ≈ 0**，在会议语音上还倒扣 1~2 点（改写、去重复词被逐字参考
+   惩罚）。它的设计价值——跨通道术语上下文——在孤立单句上测不出来。
+3. **生产路径缺陷**：半流式 Parakeet 比整段 Parakeet 差约 2 点（AMI 差 6.6 点），并且对 8 条
+   清晰的短句*完全没有出定稿*。根因：Parakeet int8 对特定输入波形会返回空串（可复现；
+   放大 4 倍增益或换个窗口就正常），半流式的窗口（预滚动 + 补零）更容易撞上；管线里的
+   AGC 是让其余部分正常工作的关键。
+
+复现：`esb_sample.py`（生成 `testclips/esb/`），再 `bench_confucius.py [--quant f16|Q8_0]
+[--skip-llm]`；逐句结果在 `testclips/esb/results_<quant>.jsonl`。模型是 registry 键
+`confucius4-r2t2-{f16,q8_0,mmproj}-gguf`；llama-server 默认在
+`<workspace>\shared\llama.cpp-b11193`。
+
 ## 全新安装（克隆后）
 
 要求：Windows 10/11，Python 3.10+（3.13 已验证）。项目零编译，不依赖 PyTorch/WSL。

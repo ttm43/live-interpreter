@@ -1,0 +1,16 @@
+# Declares which registry models this project uses.
+# Resolve with: work/models/model_registry.py  (uses(<project_dir>))
+uses:
+  asr_zh_en:    sherpa-paraformer-zh-en
+  asr_en:       sherpa-zipformer-en
+  asr_offline:  sherpa-parakeet-tdt-0.6b
+  asr_whisper:  whisper-large-v3-turbo      # faster-whisper, pulled from HF cache
+  tts:          kokoro-multi-lang-v1_1
+  translator:   qwen3-4b-instruct           # ollama; hy-mt2-1.8b on low-memory machines
+
+# Latency variants selectable in the GUI for comparison.
+variants:
+  nemotron:      [sherpa-nemotron-3.5-320ms, sherpa-nemotron-3.5-560ms, sherpa-nemotron-3.5-1120ms]
+  fast_conformer: [sherpa-fast-conformer-en-80ms, sherpa-fast-conformer-en-480ms, sherpa-fast-conformer-en-1040ms]
+  # Benchmark-only (bench_confucius.py): Youdao Confucius4-R2T2 via llama-server + mmproj.
+  confucius:     [confucius4-r2t2-f16-gguf, confucius4-r2t2-q8_0-gguf, confucius4-r2t2-mmproj-gguf]
