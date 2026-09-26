@@ -53,6 +53,7 @@ NORM = EnglishTextNormalizer()
 FILLERS = {"ah", "oh", "yeah", "hmm", "mm", "mhm", "um", "uh", "er", "erm"}
 FILLER_PHRASES = [("you", "know"), ("i", "mean")]
 LANES = ["confucius", "parakeet", "parakeet_llm", "production"]
+PARAKEET_KEY = "parakeet-semi"  # overridden by --parakeet-engine
 
 
 # ---- audio ---------------------------------------------------------------------------------
@@ -181,7 +182,7 @@ def confucius_transcribe(session: requests.Session, wav: bytes) -> tuple[str, st
 def load_parakeet_offline():
     import sherpa_onnx
 
-    c = EN_ASR_MODELS["parakeet-semi"]
+    c = EN_ASR_MODELS[PARAKEET_KEY]
     return sherpa_onnx.OfflineRecognizer.from_transducer(
         encoder=c.encoder, decoder=c.decoder, joiner=c.joiner, tokens=c.tokens,
         num_threads=8, model_type="nemo_transducer",
@@ -194,9 +195,17 @@ def parakeet_offline(rec, x: np.ndarray, sr: int) -> tuple[str, float]:
     return s.result.text.strip(), time.monotonic() - t0
 
 
+_SEMI = None
+
+
 def production_finals(x: np.ndarray, sr: int) -> tuple[list[str], float]:
-    """Exactly the live lane: fresh SemiStreamingAsr, 100 ms chunks, silence flush."""
-    asr = create_asr(EN_ASR_MODELS["parakeet-semi"])
+    """Exactly the live lane: one long-lived SemiStreamingAsr (as in production),
+    100 ms chunks, silence flush; state reset between utterances."""
+    global _SEMI
+    if _SEMI is None:
+        _SEMI = create_asr(EN_ASR_MODELS[PARAKEET_KEY])
+    asr = _SEMI
+    asr._reset()
     chunk, finals = int(sr * 0.1), []
     t0 = time.monotonic()
     for i in range(0, len(x), chunk):
@@ -232,7 +241,13 @@ def main() -> None:
     p.add_argument("--quant", default="f16")
     p.add_argument("--limit", type=int, default=0, help="max utterances per subset (0 = all)")
     p.add_argument("--skip-llm", action="store_true")
+    p.add_argument("--skip-confucius", action="store_true", help="Parakeet lanes only (no llama-server)")
+    p.add_argument("--parakeet-engine", default="parakeet-semi",
+                   help="EN_ASR_MODELS key for the Parakeet lanes (e.g. parakeet-semi-fp32)")
+    p.add_argument("--tag", default="", help="suffix for the results file name")
     args = p.parse_args()
+    global PARAKEET_KEY
+    PARAKEET_KEY = args.parakeet_engine
 
     refs = json.loads((ESB / "refs.json").read_text(encoding="utf-8"))
     refs.pop("_meta", None)
@@ -251,10 +266,10 @@ def main() -> None:
             raise SystemExit("Ollama not reachable")
         corrector = Corrector()
 
-    proc = start_server(args.quant)
+    proc = None if args.skip_confucius else start_server(args.quant)
     session = requests.Session()
     rec = load_parakeet_offline()
-    out = ESB / f"results_{args.quant}.jsonl"
+    out = ESB / f"results_{args.quant}{('_' + args.tag) if args.tag else ''}.jsonl"
     rows = []
     try:
         with out.open("w", encoding="utf-8") as fh:
@@ -263,11 +278,14 @@ def main() -> None:
                 xa = agc_condition(x, sr)
                 row = {"key": key, "subset": key.split("/")[0], "source": source,
                        "dur": len(x) / sr, "ref": ref, "errors": {}}
-                try:
-                    txt, raw, dt = confucius_transcribe(session, wav_bytes(xa, sr))
-                    row.update(confucius=txt, confucius_raw=raw, t_confucius=dt)
-                except Exception as e:  # noqa: BLE001
-                    row["errors"]["confucius"] = str(e); row.update(confucius="", t_confucius=0.0)
+                if args.skip_confucius:
+                    row.update(confucius="", confucius_raw="", t_confucius=0.0)
+                else:
+                    try:
+                        txt, raw, dt = confucius_transcribe(session, wav_bytes(xa, sr))
+                        row.update(confucius=txt, confucius_raw=raw, t_confucius=dt)
+                    except Exception as e:  # noqa: BLE001
+                        row["errors"]["confucius"] = str(e); row.update(confucius="", t_confucius=0.0)
                 try:
                     txt, dt = parakeet_offline(rec, xa, sr)
                     row.update(parakeet=txt, t_parakeet=dt)

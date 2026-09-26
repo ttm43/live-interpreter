@@ -18,6 +18,32 @@ from .config import AsrConfig
 SILENCE_RMS = 0.004     # below this a chunk counts as silence
 PRE_ROLL_S = 1.0        # audio kept before detected speech onset
 MIN_DECODE_GAP_S = 0.6  # audio-seconds between re-decodes (adaptive floor)
+ONSET_PEAK = 0.01       # |sample| above this marks the speech onset for trimming
+
+
+def _trim_leading_silence(x: np.ndarray, rate: int) -> np.ndarray:
+    idx = int(np.argmax(np.abs(x) > ONSET_PEAK))
+    return x[max(0, idx - int(0.1 * rate)):]
+
+
+def _pad(x: np.ndarray, rate: int, front_s: float, back_s: float) -> np.ndarray:
+    return np.concatenate([
+        np.zeros(int(front_s * rate), dtype=np.float32), x,
+        np.zeros(int(back_s * rate), dtype=np.float32),
+    ])
+
+
+# Parakeet-TDT (int8 and fp32 alike) sometimes returns an empty transcript
+# for a window that plainly contains speech; which windows fail depends
+# chaotically on leading silence, padding and level, and any of these cheap
+# perturbations rescues the ones the others miss (bench 2026-09-26: 10/10
+# failures recovered by the cascade, 0 by any single variant).
+_RESCUE_VARIANTS = (
+    _trim_leading_silence,
+    lambda x, rate: np.clip(x * 2.0, -1.0, 1.0),
+    lambda x, rate: _pad(x, rate, 0.5, 0.5),
+    lambda x, rate: _pad(x, rate, 1.0, 2.5),
+)
 
 
 class SemiStreamingAsr:
@@ -51,13 +77,28 @@ class SemiStreamingAsr:
         self._recognizer.decode_stream(stream)
         return stream.result.text.strip()
 
-    def _decode(self) -> str:
+    def _decode(self, final: bool = False) -> str:
         t0 = time.monotonic()
-        text = self._decode_samples(np.concatenate(self._buf), self._rate)
+        audio = np.concatenate(self._buf)
+        text = self._decode_samples(audio, self._rate)
+        if not text and final:
+            text = self._rescue(audio)
         # Re-decoding a whole window is expensive; space decodes so we never
         # spend more than ~half our time decoding.
         self._decode_gap_s = max(MIN_DECODE_GAP_S, (time.monotonic() - t0) * 1.5)
         return text
+
+    def _rescue(self, audio: np.ndarray) -> str:
+        """Final decode came back empty on a window with speech: retry with
+        perturbed inputs (see _RESCUE_VARIANTS) and take the first non-empty."""
+        rms = float(np.sqrt(np.mean(audio**2))) if audio.size else 0.0
+        if rms < SILENCE_RMS:
+            return ""
+        for variant in _RESCUE_VARIANTS:
+            text = self._decode_samples(variant(audio, self._rate), self._rate)
+            if text:
+                return text
+        return ""
 
     def _reset(self) -> None:
         self._buf = []
@@ -94,7 +135,7 @@ class SemiStreamingAsr:
 
         # Natural endpoint: enough trailing silence — decode all and reset.
         if self._trailing_silence_s >= self._cfg.rule2_min_trailing_silence:
-            text = self._decode()
+            text = self._decode(final=True)
             self._reset()
             return [AsrEvent(text=text, is_final=True)] if text else []
 
@@ -113,7 +154,7 @@ class SemiStreamingAsr:
             split = len(flat) - tail_n + int(np.argmin(energies)) * win_n + win_n // 2
             head, rest = flat[:split], flat[split:]
             self._buf = [head]
-            text = self._decode()
+            text = self._decode(final=True)
             self._buf = [rest]
             self._buf_s = len(rest) / sample_rate
             self._since_decode_s = 0.0

@@ -120,9 +120,11 @@ class AutoGain:
         if self._peak < 1e-4:
             return chunk
         wanted = min(self._target / self._peak, self._max_gain)
-        # Slew-limit gain changes (<=10% per chunk): a jumpy gain modulates
-        # loudness WITHIN an utterance, which wrecks re-decoding ASR engines.
-        self._gain = float(np.clip(wanted, self._gain / 1.1, self._gain * 1.1))
+        # Slew-limit gain changes: a jumpy gain modulates loudness WITHIN an
+        # utterance, which wrecks re-decoding ASR engines. Attack (gain up)
+        # may move 25% per chunk so a quiet short reply after silence reaches
+        # the ASR's energy gate within ~1 s; release stays at 10%.
+        self._gain = float(np.clip(wanted, self._gain / 1.1, self._gain * 1.25))
         # Hard-limit output so a stale (tiny) tracked peak right after silence
         # can't blast the utterance onset past ±1.
         return np.clip(chunk * self._gain, -1.0, 1.0)
