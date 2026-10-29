@@ -100,6 +100,10 @@ class SemiStreamingAsr:
                 return text
         return ""
 
+    def reset(self) -> None:
+        """Discard the utterance in progress (after a gap in the audio)."""
+        self._reset()
+
     def _reset(self) -> None:
         self._buf = []
         self._buf_s = 0.0

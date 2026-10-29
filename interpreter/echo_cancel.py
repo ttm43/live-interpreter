@@ -31,6 +31,10 @@ class EchoCanceller:
     def active(self) -> bool:
         return self.state != "idle"
 
+    def reset(self) -> None:
+        """Abandon the current echo (the capture timeline has a hole in it)."""
+        self.state = "idle"
+
     def set_reference(self, samples: np.ndarray, sample_rate: int) -> None:
         """Register the audio that is about to be played."""
         if sample_rate != self._rate:

@@ -205,6 +205,18 @@ class AppConfig:
     enable_assistant: bool = True
     enable_tts: bool = True
     mute_capture_during_tts: bool = True
+    # Drop mic frames while our TTS plays (an open mic hears the speakers).
+    # Turn off with a headset: then the mic never hears the TTS and muting it
+    # only loses whatever you say while the interpreter talks.
+    mute_mic_during_tts: bool = True
+    # A translation that reaches the TTS lane later than this after its
+    # utterance was finalized is shown as subtitle only, never spoken: the
+    # listener needs what is being said now, not three sentences ago.
+    tts_max_age_s: float = 6.0
+    # Seconds of audio buffered between capture and ASR per lane. When the
+    # ASR falls further behind, the OLDEST audio is dropped and the ASR
+    # state reset (live captions want the newest audio, not all of it).
+    audio_queue_s: float = 3.0
     # Subtract our own TTS from the capture (digital AEC) instead of gating
     # it. Falls back to a mute equivalent when alignment fails. Only applies
     # when TTS plays on the captured (default) device.

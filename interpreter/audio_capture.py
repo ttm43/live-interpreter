@@ -1,21 +1,81 @@
 """System audio (loopback) capture via WASAPI using PyAudioWPatch."""
 import queue
 import threading
+import time
+from dataclasses import dataclass
 
 import numpy as np
 import pyaudiowpatch as pyaudio
+
+QUEUE_S = 3.0  # audio buffered between capture and ASR; older audio is dropped
+
+
+@dataclass(frozen=True)
+class AudioChunk:
+    """One capture block. `seq` is consecutive for consecutive blocks of the
+    captured timeline, so a consumer can tell a dropped block (seq gap) from
+    a deliberate one (suppressed frames take no seq)."""
+
+    seq: int
+    captured_at: float
+    samples: np.ndarray
+
+
+class ChunkQueue:
+    """Bounded chunk queue for live captioning: drop-OLDEST on overflow.
+
+    Live captions want the newest audio; a recording would want all of it.
+    The queue therefore holds at most `queue_s` seconds and, when the ASR
+    falls further behind than that, discards the oldest block so the
+    consumer always works on what is being said now. Every dropped block
+    is counted, and the seq gap it leaves lets the consumer reset its
+    utterance state instead of splicing audio across the hole.
+    """
+
+    def __init__(self, chunk_s: float, queue_s: float = QUEUE_S):
+        self.chunk_s = chunk_s
+        self._q: queue.Queue[AudioChunk] = queue.Queue(
+            maxsize=max(1, int(round(queue_s / chunk_s)))
+        )
+        self._seq = 0
+        self.dropped_chunks = 0
+
+    @property
+    def dropped_s(self) -> float:
+        return self.dropped_chunks * self.chunk_s
+
+    def push(self, samples: np.ndarray) -> None:
+        chunk = AudioChunk(self._seq, time.monotonic(), samples)
+        self._seq += 1
+        try:
+            self._q.put_nowait(chunk)
+        except queue.Full:
+            try:
+                self._q.get_nowait()
+                self.dropped_chunks += 1
+            except queue.Empty:
+                pass
+            self._q.put_nowait(chunk)
+
+    def pop(self, timeout: float) -> AudioChunk | None:
+        try:
+            return self._q.get(timeout=timeout)
+        except queue.Empty:
+            return None
 
 
 class LoopbackCapture:
     """Captures whatever is playing on the speakers as mono float32 chunks."""
 
-    def __init__(self, device_index: int | None = None, chunk_ms: int = 100):
+    def __init__(
+        self, device_index: int | None = None, chunk_ms: int = 100, queue_s: float = QUEUE_S
+    ):
         self._pa = pyaudio.PyAudio()
         self._device = self._resolve_device(device_index)
         self.sample_rate = int(self._device["defaultSampleRate"])
         self.channels = max(1, int(self._device["maxInputChannels"]))
         self._frames_per_buffer = int(self.sample_rate * chunk_ms / 1000)
-        self._chunks: queue.Queue[np.ndarray] = queue.Queue(maxsize=200)
+        self._chunks = ChunkQueue(chunk_ms / 1000.0, queue_s)
         self._stream = None
         # When set, incoming frames are discarded (anti-feedback while TTS plays).
         self.suppress = threading.Event()
@@ -40,6 +100,15 @@ class LoopbackCapture:
     def device_name(self) -> str:
         return self._device["name"]
 
+    @property
+    def chunk_s(self) -> float:
+        return self._chunks.chunk_s
+
+    @property
+    def dropped_s(self) -> float:
+        """Seconds of audio discarded because the consumer fell behind."""
+        return self._chunks.dropped_s
+
     def _callback(self, in_data, frame_count, time_info, status):
         # Never let an exception escape into the PortAudio callback thread —
         # that would silently kill the stream with no diagnostics.
@@ -51,10 +120,7 @@ class LoopbackCapture:
                     # other channels are usually empty and averaging them all
                     # attenuates the signal (8ch stereo content -> 1/4 level).
                     samples = samples.reshape(-1, self.channels)[:, :2].mean(axis=1)
-                try:
-                    self._chunks.put_nowait(samples)
-                except queue.Full:
-                    pass  # drop oldest behaviour is fine for live captioning
+                self._chunks.push(samples)  # drop-oldest on overflow
         except Exception:  # noqa: BLE001
             self.callback_errors += 1
         return (None, pyaudio.paContinue)
@@ -70,11 +136,9 @@ class LoopbackCapture:
             stream_callback=self._callback,
         )
 
-    def read(self, timeout: float = 0.2) -> np.ndarray | None:
-        try:
-            return self._chunks.get(timeout=timeout)
-        except queue.Empty:
-            return None
+    def read(self, timeout: float = 0.2) -> AudioChunk | None:
+        """Next chunk, or None when nothing arrived within `timeout`."""
+        return self._chunks.pop(timeout)
 
     def stop(self) -> None:
         if self._stream is not None:

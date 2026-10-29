@@ -58,6 +58,11 @@ class StreamingAsr:
         self._stream = self._recognizer.create_stream()
         self._last_partial = ""
 
+    def reset(self) -> None:
+        """Discard the utterance in progress (after a gap in the audio)."""
+        self._stream = self._recognizer.create_stream()
+        self._last_partial = ""
+
     def accept(self, samples: np.ndarray, sample_rate: int) -> list[AsrEvent]:
         """Feed one chunk; returns zero or more transcript events."""
         events: list[AsrEvent] = []

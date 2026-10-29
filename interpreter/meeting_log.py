@@ -96,11 +96,11 @@ class MeetingLog:
 
 # -- formatters, one per pipeline callback signature ------------------------
 
-def fmt_final(text: str, lang: str) -> Entry:
+def fmt_final(text: str, lang: str, seg_id: int = 0) -> Entry:
     return ("对方", text)
 
 
-def fmt_mic_final(text: str, lang: str) -> Entry:
+def fmt_mic_final(text: str, lang: str, seg_id: int = 0) -> Entry:
     return ("我", text)
 
 
@@ -111,11 +111,15 @@ def _translation(tag: str, translation: str, latency: float, corrected: str, raw
     return (tag, f"{translation}  ({note})")
 
 
-def fmt_translation(translation: str, lang: str, latency: float, corrected: str, raw: str) -> Entry:
+def fmt_translation(
+    translation: str, lang: str, latency: float, corrected: str, raw: str, seg_id: int = 0
+) -> Entry:
     return _translation("对方译", translation, latency, corrected, raw)
 
 
-def fmt_mic_translation(translation: str, lang: str, latency: float, corrected: str, raw: str) -> Entry:
+def fmt_mic_translation(
+    translation: str, lang: str, latency: float, corrected: str, raw: str, seg_id: int = 0
+) -> Entry:
     return _translation("我译", translation, latency, corrected, raw)
 
 

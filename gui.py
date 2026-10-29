@@ -3,6 +3,7 @@ from interpreter.bootstrap import ensure_deps
 
 ensure_deps()  # allow running with bare system python (deps live in .venv)
 
+import collections
 import dataclasses
 import queue
 import threading
@@ -56,6 +57,7 @@ _QA_BANK_TEMPLATE = """\
 ---
 """
 
+MAX_SEGMENT_MARKS = 200  # per pane: Tk marks kept for late translations
 
 def _panel_button(parent: tk.Widget, text: str, command) -> tk.Button:
     return tk.Button(
@@ -89,9 +91,15 @@ class TranscriptPane:
         self.text.tag_configure("live_dst", foreground="#5b87b0", font=(FONT[0], 11, "italic"))
         self.text.tag_configure("audit", foreground=FG_DIM, font=FONT_SMALL)
         self._partial_active = False
-        self._last_raw = ""  # raw ASR of the last finalized source line
         self._live_src = ""   # speculative view: growing source partial
         self._live_dst = ""   # speculative view: provisional translation
+        # Finalized segments are addressed by segment_id, not by position:
+        # a translation that arrives after the NEXT final still lands under
+        # its own source line. Two Tk marks per segment: the start of its
+        # source line (RIGHT gravity: the previous segment's late translation
+        # is inserted exactly there and must land before it) and the end of
+        # everything it owns (LEFT gravity, advanced explicitly).
+        self._segments: collections.deque[int] = collections.deque()
 
     # -- events ---------------------------------------------------------------
 
@@ -103,42 +111,86 @@ class TranscriptPane:
         self._live_dst = text
         self._render_live()
 
-    def final(self, text: str, lang: str) -> None:
+    def final(self, text: str, lang: str, seg_id: int = 0) -> None:
         # The live block is this utterance's stale preview — drop it; the
         # authoritative translation follows within a beat.
         self._live_src = ""
         self._live_dst = ""
-        self._last_raw = text
         self.text.configure(state="normal")
+        if int(self.text.index("end-1c").split(".")[0]) > MAX_LINES:
+            self.text.delete("1.0", f"{MAX_LINES // 3}.0")
+            # Marks of trimmed segments collapsed onto 1.0: forget them so a
+            # very late translation appends at the end instead.
+            while self._segments and self.text.compare(self._end(self._segments[0]), "<=", "1.0"):
+                old = self._segments.popleft()
+                self.text.mark_unset(self._start(old), self._end(old))
         self._remove_partial()
-        self.text.mark_set("src_start", "end-1c")
-        self.text.mark_gravity("src_start", "left")
+        at = self.text.index("end-1c")
+        self.text.insert("end", f"[{lang}] {text}\n", "src")
+        self.text.mark_set(self._start(seg_id), at)
+        self.text.mark_gravity(self._start(seg_id), "right")
+        self.text.mark_set(self._end(seg_id), "end-1c")
+        self.text.mark_gravity(self._end(seg_id), "left")
+        self._segments.append(seg_id)
+        while len(self._segments) > MAX_SEGMENT_MARKS:
+            old = self._segments.popleft()
+            self.text.mark_unset(self._start(old), self._end(old))
         self.text.configure(state="disabled")
-        self._append(f"[{lang}] {text}\n", "src")
+        self._render_live()
 
     def translation(
-        self, text: str, lang: str, latency_s: float, corrected: str = "", raw: str = ""
+        self, text: str, lang: str, latency_s: float, corrected: str = "", raw: str = "",
+        seg_id: int = 0,
     ) -> None:
+        if seg_id not in self._segments:
+            # Source line gone (trimmed) or never shown: append at the end.
+            self._append(f"      → {text} ", "dst")
+            self._append(f"({latency_s:.1f}s)\n\n", "meta")
+            return
         # The interpreter fixed the source from dialogue context: promote
         # the corrected line and keep the raw ASR as a dim audit trail.
-        if raw and raw == self._last_raw and is_changed(raw, corrected):
+        if raw and is_changed(raw, corrected):
             src_lang = "zh" if lang == "en" else "en"
+            start = self._start(seg_id)
             self.text.configure(state="normal")
-            self._remove_partial()
-            self.text.delete("src_start", "end-1c")
-            self.text.insert("end", f"[{src_lang}] {corrected}\n", "src")
-            self.text.insert("end", f"      原: {raw}\n", "audit")
+            at = self.text.index(start)  # right gravity would ride the insert
+            self.text.delete(at, f"{at} lineend")
+            self.text.insert(at, f"[{src_lang}] {corrected}", "src")
+            self.text.mark_set(start, at)
             self.text.configure(state="disabled")
-        self._append(f"      → {text} ", "dst")
-        self._append(f"({latency_s:.1f}s)\n\n", "meta")
+            self._insert_at(seg_id, f"      原: {raw}\n", "audit")
+        self._insert_at(seg_id, f"      → {text} ", "dst")
+        self._insert_at(seg_id, f"({latency_s:.1f}s)\n\n", "meta")
 
     def clear(self) -> None:
         self.text.configure(state="normal")
         self.text.delete("1.0", "end")
+        for seg_id in self._segments:
+            self.text.mark_unset(self._start(seg_id), self._end(seg_id))
+        self._segments.clear()
         self._partial_active = False
         self._live_src = ""
         self._live_dst = ""
         self.text.configure(state="disabled")
+
+    @staticmethod
+    def _start(seg_id: int) -> str:
+        return f"seg{seg_id}_start"
+
+    @staticmethod
+    def _end(seg_id: int) -> str:
+        return f"seg{seg_id}_end"
+
+    def _insert_at(self, seg_id: int, text: str, tag: str) -> None:
+        """Insert finalized content at the end of a segment's block and move
+        the block's end mark past it (left-gravity marks stay put)."""
+        end = self._end(seg_id)
+        self.text.configure(state="normal")
+        self._remove_partial()  # its mark may sit exactly at `end`
+        self.text.insert(end, text, tag)
+        self.text.mark_set(end, f"{end} + {len(text)} chars")
+        self.text.configure(state="disabled")
+        self._render_live()
 
     # -- rendering ------------------------------------------------------------
 
@@ -162,7 +214,10 @@ class TranscriptPane:
 
     def _remove_partial(self) -> None:
         if self._partial_active:
-            self.text.delete("partial_start", "end")
+            # "end-1c", not "end": deleting through "end" also swallows the
+            # real newline before Tk's implicit trailing one, which would glue
+            # a segment's translation onto the next segment's source line.
+            self.text.delete("partial_start", "end-1c")
             self._partial_active = False
 
     def _append(self, text: str, tag: str) -> None:
@@ -434,20 +489,16 @@ class InterpreterGui:
             threading.Thread(target=self._do_stop, daemon=True).start()
         else:
             self._set_busy("正在启动 ...")
-            threading.Thread(target=self._do_start, daemon=True).start()
+            cfg = self._config_from_ui()  # Tk variables belong to this thread
+            threading.Thread(target=self._do_start, args=(cfg,), daemon=True).start()
 
-    def _do_start(self) -> None:
-        from interpreter.bootstrap import ensure_ollama
-
-        self.events.put(("status", ("正在检查 Ollama ...",)))
-        ensure_ollama()  # auto-start the bundled Ollama when needed
+    def _config_from_ui(self) -> AppConfig:
         fast = self.fast_var.get()
-        cfg = AppConfig(
+        return AppConfig(
             lang_mode="en",
             en_asr_model=self.asr_var.get(),
             en_asr_fast_model="" if fast == "关闭" else fast,
             enable_tts=self.tts_var.get(),
-            enable_assistant=self.assist_var.get(),
             enable_mic=self.mic_var.get(),
             mic_device_index=self.mic_map.get(self.mic_device_var.get()),
             mic_asr_model=self.mic_asr_var.get(),
@@ -457,17 +508,23 @@ class InterpreterGui:
                 AssistantConfig(), user_name=self.name_var.get().strip()
             ),
         )
+
+    def _do_start(self, cfg: AppConfig) -> None:
+        from interpreter.bootstrap import ensure_ollama
+
+        self.events.put(("status", ("正在检查 Ollama ...",)))
+        ensure_ollama()  # auto-start the bundled Ollama when needed
         ev = self.events.put
         pipeline = InterpreterPipeline(
             cfg,
             on_partial=lambda t: ev(("partial", (t,))),
-            on_final=lambda t, lang: ev(("final", (t, lang))),
-            on_translation=lambda t, lang, s, c, r: ev(("translation", (t, lang, s, c, r))),
+            on_final=lambda t, lang, sid: ev(("final", (t, lang, sid))),
+            on_translation=lambda t, lang, s, c, r, sid: ev(("translation", (t, lang, s, c, r, sid))),
             on_provisional=lambda t, lang: ev(("provisional", (t, lang))),
             on_assist=lambda t, s, f: ev(("assist", (t, s, f))),
             on_mic_partial=lambda t: ev(("mic_partial", (t,))),
-            on_mic_final=lambda t, lang: ev(("mic_final", (t, lang))),
-            on_mic_translation=lambda t, lang, s, c, r: ev(("mic_translation", (t, lang, s, c, r))),
+            on_mic_final=lambda t, lang, sid: ev(("mic_final", (t, lang, sid))),
+            on_mic_translation=lambda t, lang, s, c, r, sid: ev(("mic_translation", (t, lang, s, c, r, sid))),
             on_status=lambda m: ev(("status", (m,))),
         )
         error = pipeline.check_backend()
@@ -540,21 +597,25 @@ class InterpreterGui:
     def _ev_provisional(self, text: str, lang: str) -> None:
         self.other.provisional(text)
 
-    def _ev_final(self, text: str, lang: str) -> None:
-        self.other.final(text, lang)
+    def _ev_final(self, text: str, lang: str, seg_id: int) -> None:
+        self.other.final(text, lang, seg_id)
 
-    def _ev_translation(self, text: str, lang: str, latency_s: float, corrected: str, raw: str) -> None:
-        self.other.translation(text, lang, latency_s, corrected, raw)
+    def _ev_translation(
+        self, text: str, lang: str, latency_s: float, corrected: str, raw: str, seg_id: int
+    ) -> None:
+        self.other.translation(text, lang, latency_s, corrected, raw, seg_id)
 
     # me (microphone)
     def _ev_mic_partial(self, text: str) -> None:
         self.me.partial(text)
 
-    def _ev_mic_final(self, text: str, lang: str) -> None:
-        self.me.final(text, lang)
+    def _ev_mic_final(self, text: str, lang: str, seg_id: int) -> None:
+        self.me.final(text, lang, seg_id)
 
-    def _ev_mic_translation(self, text: str, lang: str, latency_s: float, corrected: str, raw: str) -> None:
-        self.me.translation(text, lang, latency_s, corrected, raw)
+    def _ev_mic_translation(
+        self, text: str, lang: str, latency_s: float, corrected: str, raw: str, seg_id: int
+    ) -> None:
+        self.me.translation(text, lang, latency_s, corrected, raw, seg_id)
 
     def _ev_assist(self, text: str, latency_s: float, is_final: bool) -> None:
         """Render one analysis in the side panel.

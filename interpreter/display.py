@@ -22,14 +22,15 @@ class ConsoleDisplay:
             sys.stdout.flush()
             self._partial_shown = True
 
-    def final_source(self, text: str, lang: str) -> None:
+    def final_source(self, text: str, lang: str, seg_id: int = 0) -> None:
         with self._lock:
             self._clear_partial()
             print(f"[{lang}] {text}")
             sys.stdout.flush()
 
     def translation(
-        self, text: str, lang: str, latency_s: float, corrected: str = "", raw: str = ""
+        self, text: str, lang: str, latency_s: float, corrected: str = "", raw: str = "",
+        seg_id: int = 0,
     ) -> None:
         with self._lock:
             self._clear_partial()
@@ -38,14 +39,15 @@ class ConsoleDisplay:
             print(f"  -> [{lang}] {text}   ({latency_s:.1f}s)")
             sys.stdout.flush()
 
-    def mic_final(self, text: str, lang: str) -> None:
+    def mic_final(self, text: str, lang: str, seg_id: int = 0) -> None:
         with self._lock:
             self._clear_partial()
             print(f"[me/{lang}] {text}")
             sys.stdout.flush()
 
     def mic_translation(
-        self, text: str, lang: str, latency_s: float, corrected: str = "", raw: str = ""
+        self, text: str, lang: str, latency_s: float, corrected: str = "", raw: str = "",
+        seg_id: int = 0,
     ) -> None:
         with self._lock:
             self._clear_partial()

@@ -86,6 +86,13 @@ class DialogueInterpreter:
         self._cfg = cfg
         self._history: list[tuple[str, str]] = []  # (speaker, corrected text)
         self._lock = threading.Lock()
+        # Turns enter the history in lock order, which is finalize order per
+        # lane but not necessarily speaking order across lanes. Reordering the
+        # history after the fact would not help: the later turn has already
+        # been interpreted without the earlier one. So this only counts how
+        # often it happens; a merge queue is worth building when it is often.
+        self._last_t: float | None = None
+        self.out_of_order = 0
         self._session = requests.Session()
         self._glossary = Glossary()
         # Same hot-reloaded background.txt the assistant reads: knowing the
@@ -124,11 +131,13 @@ class DialogueInterpreter:
 
     # -- interpretation -----------------------------------------------------------
 
-    def interpret(self, raw: str, speaker: str) -> Interpreted:
+    def interpret(self, raw: str, speaker: str, t_final: float | None = None) -> Interpreted:
         """Correct + translate one finalized utterance and record it.
 
         The lock covers prompt building, inference and the history append so
-        turns land in order; callers do their UI work outside it.
+        turns land in order; callers do their UI work outside it. `t_final`
+        (monotonic time the utterance was finalized) only feeds the
+        out-of-order counter.
         """
         target_lang = "en" if detect_lang(raw) == "zh" else "zh"
         model = self._cfg.model
@@ -136,10 +145,12 @@ class DialogueInterpreter:
             # MT-only models can't do JSON or context-aware correction.
             translation = self._mt_translate(raw, target_lang)
             with self._lock:
+                self._note_order(t_final)
                 self._record(speaker, raw)
             return Interpreted(raw, translation, target_lang, changed=False)
 
         with self._lock:
+            self._note_order(t_final)
             messages = [
                 {"role": "system", "content": _SYSTEM_PROMPT},
                 {"role": "user", "content": self._user_prompt(raw, speaker, target_lang)},
@@ -211,6 +222,13 @@ class DialogueInterpreter:
             return "Conversation so far: (start of meeting)\n\n"
         lines = "\n".join(f"[{spk}] {txt}" for spk, txt in self._history)
         return f"Conversation so far:\n{lines}\n\n"
+
+    def _note_order(self, t_final: float | None) -> None:
+        if t_final is None:
+            return
+        if self._last_t is not None and t_final < self._last_t:
+            self.out_of_order += 1
+        self._last_t = max(self._last_t or t_final, t_final)
 
     def _record(self, speaker: str, text: str) -> None:
         """Append a turn; keep the window bounded by turns AND characters."""
